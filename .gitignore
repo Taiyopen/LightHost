@@ -1,0 +1,22 @@
+# 建置輸出
+Builds/
+build/
+build2/
+cmake-build-*/
+dist/
+JuceLibraryCode/
+lib/
+cmake_log.txt
+installer/redist/
+
+# 本機參考與備份
+_reference/
+
+# ASIO SDK 授權不允許散佈，各自下載放到 third_party/ASIOSDK
+third_party/ASIOSDK/
+third_party/asio-sdk-tmp/
+third_party/asio-sdk.zip
+
+# 編輯器
+.vs/
+*.user
