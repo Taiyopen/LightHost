@@ -1,5 +1,6 @@
 #include "AecMonitorWindow.h"
 #include "../IconMenu.hpp"
+#include "../AppSettings.h"
 #include "../AppTheme.h"
 #include "../dsp/AecStats.h"
 #include <array>
@@ -238,7 +239,7 @@ AecMonitorWindow::AecMonitorWindow (IconMenu& owner_)
     setSize (420, 560);
     centreWithSize (getWidth(), getHeight());
 
-    restoreWindowStateFromString (getAppProperties().getUserSettings()->getValue ("aecMonitorWindowPos"));
+    restoreWindowStateFromString (getSettings().getWindowState (AppSettings::Window::aecMonitor));
     centreWithSize (getWidth(), getHeight());
     setVisible (true);
     toFront (true);
@@ -248,7 +249,7 @@ AecMonitorWindow::AecMonitorWindow (IconMenu& owner_)
 AecMonitorWindow::~AecMonitorWindow()
 {
     stopTimer();
-    getAppProperties().getUserSettings()->setValue ("aecMonitorWindowPos", getWindowStateAsString());
+    getSettings().setWindowState (AppSettings::Window::aecMonitor, getWindowStateAsString());
     clearContentComponent();
 }
 
@@ -263,5 +264,5 @@ void AecMonitorWindow::closeButtonPressed()
 void AecMonitorWindow::timerCallback()
 {
     if (panel != nullptr)
-        panel->updateSnapshot (owner.getAecMonitorSnapshot());
+        panel->updateSnapshot (owner.getEngine().getAecMonitorSnapshot());
 }

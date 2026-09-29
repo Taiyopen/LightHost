@@ -29,6 +29,28 @@ namespace
     }
 }
 
+struct AecProcessor::Engine
+{
+    std::unique_ptr<webrtc::EchoControl> echoController;
+    std::unique_ptr<webrtc::HighPassFilter> hpFilter;
+    std::unique_ptr<webrtc::AudioBuffer> renderBuffer;
+    std::unique_ptr<webrtc::AudioBuffer> captureBuffer;
+    std::unique_ptr<webrtc::PushSincResampler> refResampler;
+    std::unique_ptr<webrtc::PushSincResampler> capInResampler;
+    std::unique_ptr<webrtc::PushSincResampler> capOutResampler;
+
+    // 容量在建立時預留好，音訊執行緒上正常情況不會再配置記憶體
+    std::vector<float> micMono;
+    std::vector<float> capHostPending;
+    std::vector<float> capOutPending;
+    std::vector<float> refHostFrameScratch;
+    std::vector<float> refResampleScratch;
+    std::vector<float> capResampleScratch;
+    std::vector<float> capFrameScratch;
+    std::vector<float> capOutResampleScratch;
+    std::vector<float*> channelPtrScratch;
+};
+
 webrtc::EchoCanceller3Config AecProcessor::makeAecConfig (float strength)
 {
     webrtc::EchoCanceller3Config config;
@@ -58,10 +80,7 @@ AecProcessor::AecProcessor()
     referenceRing.resize (static_cast<size_t> (referenceRingSize), 0.0f);
 }
 
-AecProcessor::~AecProcessor()
-{
-    destroyAec3();
-}
+AecProcessor::~AecProcessor() = default;
 
 bool AecProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
@@ -99,76 +118,75 @@ int AecProcessor::pickProcessingSampleRate (int hostRate)
     return 48000;
 }
 
-void AecProcessor::destroyAec3()
+std::unique_ptr<AecProcessor::Engine> AecProcessor::createEngine() const
 {
-    std::lock_guard<std::mutex> lock (captureMutex);
-    echoController.reset();
-    hpFilter.reset();
-    renderBuffer.reset();
-    captureBuffer.reset();
-    refResampler.reset();
-    capInResampler.reset();
-    capOutResampler.reset();
-}
+    auto e = std::make_unique<Engine>();
 
-void AecProcessor::createAec3 (int processingRate)
-{
-    destroyAec3();
-
-    webrtc::EchoCanceller3Config config = makeAecConfig (strengthPercent);
+    webrtc::EchoCanceller3Config config = makeAecConfig (strengthPercent.load());
     config.filter.export_linear_aec_output = false;
 
     webrtc::EchoCanceller3Factory factory (config);
-    echoController = factory.Create (processingRate, numChannels, numChannels);
-    hpFilter = std::make_unique<webrtc::HighPassFilter> (processingRate, static_cast<size_t> (numChannels));
+    e->echoController = factory.Create (processingSampleRate, numChannels, numChannels);
+    e->hpFilter = std::make_unique<webrtc::HighPassFilter> (processingSampleRate, static_cast<size_t> (numChannels));
 
-    renderBuffer = std::make_unique<webrtc::AudioBuffer> (
-        static_cast<size_t> (processingRate),
+    e->renderBuffer = std::make_unique<webrtc::AudioBuffer> (
+        static_cast<size_t> (processingSampleRate),
         static_cast<size_t> (numChannels),
-        static_cast<size_t> (processingRate),
+        static_cast<size_t> (processingSampleRate),
         static_cast<size_t> (numChannels),
-        static_cast<size_t> (processingRate),
+        static_cast<size_t> (processingSampleRate),
         static_cast<size_t> (numChannels));
 
-    captureBuffer = std::make_unique<webrtc::AudioBuffer> (
-        static_cast<size_t> (processingRate),
+    e->captureBuffer = std::make_unique<webrtc::AudioBuffer> (
+        static_cast<size_t> (processingSampleRate),
         static_cast<size_t> (numChannels),
-        static_cast<size_t> (processingRate),
+        static_cast<size_t> (processingSampleRate),
         static_cast<size_t> (numChannels),
-        static_cast<size_t> (processingRate),
+        static_cast<size_t> (processingSampleRate),
         static_cast<size_t> (numChannels));
 
-    const int hostRate = static_cast<int> (hostSampleRate);
-    resampling = hostRate != processingRate;
-    frameSize = processingRate / 100;
-    hostFrameSize = resampling ? hostFrameSizeFor (hostRate, processingRate, frameSize) : frameSize;
-
-    capHostPending.clear();
-    capOutPending.clear();
-    refHostFrameScratch.assign (static_cast<size_t> (hostFrameSize), 0.0f);
-    capFrameScratch.assign (static_cast<size_t> (frameSize), 0.0f);
-    channelPtrScratch.assign (1, nullptr);
+    e->micMono.assign (static_cast<size_t> (blockSize), 0.0f);
+    e->capHostPending.reserve (static_cast<size_t> (hostFrameSize + blockSize * 2));
+    e->capOutPending.reserve (static_cast<size_t> (hostFrameSize * 2 + blockSize * 2));
+    e->refHostFrameScratch.assign (static_cast<size_t> (hostFrameSize), 0.0f);
+    e->capFrameScratch.assign (static_cast<size_t> (frameSize), 0.0f);
+    e->channelPtrScratch.assign (1, nullptr);
 
     if (resampling)
     {
-        refResampleScratch.assign (static_cast<size_t> (frameSize), 0.0f);
-        capResampleScratch.assign (static_cast<size_t> (frameSize), 0.0f);
-        capOutResampleScratch.assign (static_cast<size_t> (hostFrameSize), 0.0f);
+        e->refResampleScratch.assign (static_cast<size_t> (frameSize), 0.0f);
+        e->capResampleScratch.assign (static_cast<size_t> (frameSize), 0.0f);
+        e->capOutResampleScratch.assign (static_cast<size_t> (hostFrameSize), 0.0f);
 
-        refResampler = std::make_unique<webrtc::PushSincResampler> (
+        e->refResampler = std::make_unique<webrtc::PushSincResampler> (
             static_cast<size_t> (hostFrameSize),
             static_cast<size_t> (frameSize));
-        capInResampler = std::make_unique<webrtc::PushSincResampler> (
+        e->capInResampler = std::make_unique<webrtc::PushSincResampler> (
             static_cast<size_t> (hostFrameSize),
             static_cast<size_t> (frameSize));
-        capOutResampler = std::make_unique<webrtc::PushSincResampler> (
+        e->capOutResampler = std::make_unique<webrtc::PushSincResampler> (
             static_cast<size_t> (frameSize),
             static_cast<size_t> (hostFrameSize));
     }
+
+    return e;
+}
+
+void AecProcessor::installEngine (std::unique_ptr<Engine> newEngine)
+{
+    {
+        const std::lock_guard<std::mutex> lock (engineMutex);
+        std::swap (engine, newEngine);
+    }
+
+    // newEngine 現在是舊引擎，在鎖外釋放，不拖住音訊執行緒
 }
 
 void AecProcessor::prepareToPlay (double newSampleRate, int samplesPerBlock)
 {
+    prepared.store (false);
+    installEngine (nullptr);
+
     hostSampleRate = newSampleRate;
     blockSize = samplesPerBlock;
     referenceDelaySamples = juce::jmax (512, samplesPerBlock * 2);
@@ -178,7 +196,13 @@ void AecProcessor::prepareToPlay (double newSampleRate, int samplesPerBlock)
     std::fill (referenceRing.begin(), referenceRing.end(), 0.0f);
 
     processingSampleRate = pickProcessingSampleRate (static_cast<int> (newSampleRate));
-    createAec3 (processingSampleRate);
+    const int hostRate = static_cast<int> (hostSampleRate);
+    resampling = hostRate != processingSampleRate;
+    frameSize = processingSampleRate / 100;
+    hostFrameSize = resampling ? hostFrameSizeFor (hostRate, processingSampleRate, frameSize) : frameSize;
+
+    installEngine (createEngine());
+    prepared.store (true);
 
     referenceLevelDb.store (-100.0f);
     micRawLevelDb.store (-100.0f);
@@ -193,20 +217,21 @@ void AecProcessor::prepareToPlay (double newSampleRate, int samplesPerBlock)
 
 void AecProcessor::setStrength (float strengthPercentIn)
 {
-    strengthPercent = juce::jlimit (25.0f, 150.0f, strengthPercentIn);
+    strengthPercent.store (juce::jlimit (25.0f, 150.0f, strengthPercentIn));
 
-    if (processingSampleRate > 0 && hostSampleRate > 0.0)
-        createAec3 (processingSampleRate);
+    if (prepared.load())
+        installEngine (createEngine());
 }
 
 float AecProcessor::getStrength() const
 {
-    return strengthPercent;
+    return strengthPercent.load();
 }
 
 void AecProcessor::releaseResources()
 {
-    destroyAec3();
+    prepared.store (false);
+    installEngine (nullptr);
 }
 
 void AecProcessor::updateLevelDb (std::atomic<float>& target, float blockRms)
@@ -314,83 +339,79 @@ void AecProcessor::pushReference (const float* samples, int numSamples)
     }
 }
 
-void AecProcessor::feedRenderFrame (const float* frame, int processingFrameSize)
+void AecProcessor::feedRenderFrame (Engine& e, const float* frame)
 {
-    if (echoController == nullptr || renderBuffer == nullptr || frame == nullptr)
+    if (e.echoController == nullptr || e.renderBuffer == nullptr || frame == nullptr)
         return;
 
-    channelPtrScratch[0] = const_cast<float*> (frame);
+    e.channelPtrScratch[0] = const_cast<float*> (frame);
     const webrtc::StreamConfig streamConfig (processingSampleRate, static_cast<size_t> (numChannels));
-    renderBuffer->CopyFrom (channelPtrScratch.data(), streamConfig);
-    renderBuffer->SplitIntoFrequencyBands();
-    echoController->AnalyzeRender (renderBuffer.get());
-    renderBuffer->MergeFrequencyBands();
+    e.renderBuffer->CopyFrom (e.channelPtrScratch.data(), streamConfig);
+    e.renderBuffer->SplitIntoFrequencyBands();
+    e.echoController->AnalyzeRender (e.renderBuffer.get());
+    e.renderBuffer->MergeFrequencyBands();
 }
 
-void AecProcessor::processCaptureFrame (const float* micFrame, float* outputFrame, int processingFrameSize)
+void AecProcessor::processCaptureFrame (Engine& e, const float* micFrame, float* outputFrame)
 {
-    if (echoController == nullptr || captureBuffer == nullptr || micFrame == nullptr || outputFrame == nullptr)
+    if (e.echoController == nullptr || e.captureBuffer == nullptr || micFrame == nullptr || outputFrame == nullptr)
     {
         if (outputFrame != nullptr && micFrame != nullptr)
-            std::memcpy (outputFrame, micFrame, static_cast<size_t> (processingFrameSize) * sizeof (float));
+            std::memcpy (outputFrame, micFrame, static_cast<size_t> (frameSize) * sizeof (float));
         return;
     }
 
-    channelPtrScratch[0] = const_cast<float*> (micFrame);
+    e.channelPtrScratch[0] = const_cast<float*> (micFrame);
     const webrtc::StreamConfig streamConfig (processingSampleRate, static_cast<size_t> (numChannels));
 
-    captureBuffer->CopyFrom (channelPtrScratch.data(), streamConfig);
-    echoController->AnalyzeCapture (captureBuffer.get());
-    captureBuffer->SplitIntoFrequencyBands();
-    hpFilter->Process (captureBuffer.get(), true);
+    e.captureBuffer->CopyFrom (e.channelPtrScratch.data(), streamConfig);
+    e.echoController->AnalyzeCapture (e.captureBuffer.get());
+    e.captureBuffer->SplitIntoFrequencyBands();
+    e.hpFilter->Process (e.captureBuffer.get(), true);
 
     const int delayMs = juce::roundToInt (1000.0 * static_cast<double> (lastReferenceLeadForAec)
                                           / hostSampleRate);
-    echoController->SetAudioBufferDelay (delayMs);
-    echoController->ProcessCapture (captureBuffer.get(), false);
-    captureBuffer->MergeFrequencyBands();
-    captureBuffer->CopyTo (streamConfig, channelPtrScratch.data());
-    std::memcpy (outputFrame, channelPtrScratch[0], static_cast<size_t> (processingFrameSize) * sizeof (float));
+    e.echoController->SetAudioBufferDelay (delayMs);
+    e.echoController->ProcessCapture (e.captureBuffer.get(), false);
+    e.captureBuffer->MergeFrequencyBands();
+    e.captureBuffer->CopyTo (streamConfig, e.channelPtrScratch.data());
+    std::memcpy (outputFrame, e.channelPtrScratch[0], static_cast<size_t> (frameSize) * sizeof (float));
 }
 
-void AecProcessor::processAlignedFramePair (const float* refHostFrame,
-                                            const float* micHostFrame,
-                                            int frameHostSize)
+void AecProcessor::processAlignedFramePair (Engine& e, const float* refHostFrame, const float* micHostFrame)
 {
-    updateLevelDb (referenceLevelDb, computeBlockRms (refHostFrame, frameHostSize));
-
-    std::lock_guard<std::mutex> lock (captureMutex);
+    updateLevelDb (referenceLevelDb, computeBlockRms (refHostFrame, hostFrameSize));
 
     if (resampling)
     {
-        refResampler->Resample (refHostFrame,
-                                static_cast<size_t> (frameHostSize),
-                                refResampleScratch.data(),
-                                static_cast<size_t> (frameSize));
-        capInResampler->Resample (micHostFrame,
-                                  static_cast<size_t> (frameHostSize),
-                                  capResampleScratch.data(),
+        e.refResampler->Resample (refHostFrame,
+                                  static_cast<size_t> (hostFrameSize),
+                                  e.refResampleScratch.data(),
                                   static_cast<size_t> (frameSize));
+        e.capInResampler->Resample (micHostFrame,
+                                    static_cast<size_t> (hostFrameSize),
+                                    e.capResampleScratch.data(),
+                                    static_cast<size_t> (frameSize));
 
-        feedRenderFrame (refResampleScratch.data(), frameSize);
-        processCaptureFrame (capResampleScratch.data(), capFrameScratch.data(), frameSize);
+        feedRenderFrame (e, e.refResampleScratch.data());
+        processCaptureFrame (e, e.capResampleScratch.data(), e.capFrameScratch.data());
 
-        capOutResampler->Resample (capFrameScratch.data(),
-                                   static_cast<size_t> (frameSize),
-                                   capOutResampleScratch.data(),
-                                   static_cast<size_t> (frameHostSize));
-        capOutPending.insert (capOutPending.end(),
-                              capOutResampleScratch.begin(),
-                              capOutResampleScratch.begin() + frameHostSize);
+        e.capOutResampler->Resample (e.capFrameScratch.data(),
+                                     static_cast<size_t> (frameSize),
+                                     e.capOutResampleScratch.data(),
+                                     static_cast<size_t> (hostFrameSize));
+        e.capOutPending.insert (e.capOutPending.end(),
+                                e.capOutResampleScratch.begin(),
+                                e.capOutResampleScratch.begin() + hostFrameSize);
 
-        const float refRms = computeBlockRms (refHostFrame, frameHostSize);
-        const float micInRms = computeBlockRms (micHostFrame, frameHostSize);
-        const float micOutRms = computeBlockRms (capOutResampleScratch.data(), frameHostSize);
+        const float refRms = computeBlockRms (refHostFrame, hostFrameSize);
+        const float micInRms = computeBlockRms (micHostFrame, hostFrameSize);
+        const float micOutRms = computeBlockRms (e.capOutResampleScratch.data(), hostFrameSize);
         updateLevelDb (micLevelDb, micInRms);
         updateLevelDb (outputLevelDb, micOutRms);
 
-        if (echoController != nullptr)
-            updateSmoothedDb (erleDb, static_cast<float> (echoController->GetMetrics().echo_return_loss_enhancement));
+        if (e.echoController != nullptr)
+            updateSmoothedDb (erleDb, static_cast<float> (e.echoController->GetMetrics().echo_return_loss_enhancement));
 
         if (refRms > 1.0e-4f && micInRms > 1.0e-7f)
         {
@@ -400,20 +421,20 @@ void AecProcessor::processAlignedFramePair (const float* refHostFrame,
     }
     else
     {
-        feedRenderFrame (refHostFrame, frameSize);
-        processCaptureFrame (micHostFrame, capFrameScratch.data(), frameSize);
-        capOutPending.insert (capOutPending.end(),
-                              capFrameScratch.begin(),
-                              capFrameScratch.begin() + frameSize);
+        feedRenderFrame (e, refHostFrame);
+        processCaptureFrame (e, micHostFrame, e.capFrameScratch.data());
+        e.capOutPending.insert (e.capOutPending.end(),
+                                e.capFrameScratch.begin(),
+                                e.capFrameScratch.begin() + frameSize);
 
         const float refRms = computeBlockRms (refHostFrame, frameSize);
         const float micInRms = computeBlockRms (micHostFrame, frameSize);
-        const float micOutRms = computeBlockRms (capFrameScratch.data(), frameSize);
+        const float micOutRms = computeBlockRms (e.capFrameScratch.data(), frameSize);
         updateLevelDb (micLevelDb, micInRms);
         updateLevelDb (outputLevelDb, micOutRms);
 
-        if (echoController != nullptr)
-            updateSmoothedDb (erleDb, static_cast<float> (echoController->GetMetrics().echo_return_loss_enhancement));
+        if (e.echoController != nullptr)
+            updateSmoothedDb (erleDb, static_cast<float> (e.echoController->GetMetrics().echo_return_loss_enhancement));
 
         if (refRms > 1.0e-4f && micInRms > 1.0e-7f)
         {
@@ -426,7 +447,7 @@ void AecProcessor::processAlignedFramePair (const float* refHostFrame,
 AecProcessorStats AecProcessor::getStats() const
 {
     AecProcessorStats stats;
-    stats.aecStrengthPercent = strengthPercent;
+    stats.aecStrengthPercent = strengthPercent.load();
     const int lead = getReferenceLeadSamples();
     stats.referenceDelayMs = static_cast<float> (1000.0 * static_cast<double> (lead) / hostSampleRate);
     stats.referenceTargetDelayMs = static_cast<float> (1000.0 * static_cast<double> (referenceDelaySamples)
@@ -447,39 +468,45 @@ void AecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
 {
     juce::ScopedNoDenormals noDenormals;
     const int numSamples = buffer.getNumSamples();
-    if (numSamples <= 0 || echoController == nullptr)
+    if (numSamples <= 0)
         return;
+
+    // UI 執行緒正在換引擎時不等鎖，這一段直接讓原音通過
+    std::unique_lock<std::mutex> lock (engineMutex, std::try_to_lock);
+    if (! lock.owns_lock() || engine == nullptr || engine->echoController == nullptr)
+        return;
+
+    Engine& e = *engine;
 
     auto* left  = buffer.getWritePointer (0);
     auto* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : left;
 
-    std::vector<float> micMono (static_cast<size_t> (numSamples));
+    // 主機給的區塊比 prepareToPlay 宣告的大時才會配置（少見）
+    if (static_cast<int> (e.micMono.size()) < numSamples)
+        e.micMono.resize (static_cast<size_t> (numSamples));
+
+    float* micMono = e.micMono.data();
     for (int i = 0; i < numSamples; ++i)
-        micMono[static_cast<size_t> (i)] = buffer.getNumChannels() > 1 ? 0.5f * (left[i] + right[i]) : left[i];
+        micMono[i] = buffer.getNumChannels() > 1 ? 0.5f * (left[i] + right[i]) : left[i];
 
-    capHostPending.insert (capHostPending.end(), micMono.begin(), micMono.end());
-    updateLevelDb (micRawLevelDb, computeBlockRms (micMono.data(), numSamples));
+    e.capHostPending.insert (e.capHostPending.end(), micMono, micMono + numSamples);
+    updateLevelDb (micRawLevelDb, computeBlockRms (micMono, numSamples));
 
-    while (static_cast<int> (capHostPending.size()) >= hostFrameSize)
+    while (static_cast<int> (e.capHostPending.size()) >= hostFrameSize)
     {
-        readReferenceFrame (refHostFrameScratch.data(), hostFrameSize);
+        readReferenceFrame (e.refHostFrameScratch.data(), hostFrameSize);
+        processAlignedFramePair (e, e.refHostFrameScratch.data(), e.capHostPending.data());
 
-        processAlignedFramePair (refHostFrameScratch.data(),
-                                 capHostPending.data(),
-                                 hostFrameSize);
-
-        capHostPending.erase (capHostPending.begin(),
-                              capHostPending.begin() + hostFrameSize);
+        e.capHostPending.erase (e.capHostPending.begin(),
+                                e.capHostPending.begin() + hostFrameSize);
     }
 
+    // 先用已處理好的樣本，不夠的部分補原音；最後一次移掉用過的，不再逐樣本從頭刪除
+    const int available = juce::jmin (numSamples, static_cast<int> (e.capOutPending.size()));
+
     for (int i = 0; i < numSamples; ++i)
     {
-        float sample = micMono[static_cast<size_t> (i)];
-        if (! capOutPending.empty())
-        {
-            sample = capOutPending.front();
-            capOutPending.erase (capOutPending.begin());
-        }
+        const float sample = i < available ? e.capOutPending[static_cast<size_t> (i)] : micMono[i];
 
         if (buffer.getNumChannels() > 1)
         {
@@ -491,6 +518,8 @@ void AecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
             left[i] = sample;
         }
     }
+
+    e.capOutPending.erase (e.capOutPending.begin(), e.capOutPending.begin() + available);
 
     samplesProcessed.fetch_add (numSamples, std::memory_order_relaxed);
 }

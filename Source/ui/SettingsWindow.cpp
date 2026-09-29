@@ -1,8 +1,8 @@
 #include "SettingsWindow.h"
 #include "../IconMenu.hpp"
+#include "../AppSettings.h"
 #include "../AppTheme.h"
 #include "../audio/LoopbackDevices.h"
-#include "../dsp/AecProcessor.h"
 
 namespace
 {
@@ -12,15 +12,15 @@ namespace
     public:
         explicit AudioSettingsTab (IconMenu& owner_)
             : owner (owner_),
-              audioSettings (owner.getDeviceManager(), 0, 256, 0, 256, false, false, true, true)
+              audioSettings (owner.getEngine().getDeviceManager(), 0, 256, 0, 256, false, false, true, true)
         {
             addAndMakeVisible (audioSettings);
-            owner.getDeviceManager().addChangeListener (this);
+            owner.getEngine().getDeviceManager().addChangeListener (this);
         }
 
         ~AudioSettingsTab() override
         {
-            owner.getDeviceManager().removeChangeListener (this);
+            owner.getEngine().getDeviceManager().removeChangeListener (this);
         }
 
         void resized() override
@@ -31,7 +31,7 @@ namespace
     private:
         void changeListenerCallback (juce::ChangeBroadcaster*) override
         {
-            owner.saveAudioDeviceStateAndReload();
+            owner.getEngine().saveAudioDeviceStateAndRebuild();
         }
 
         IconMenu& owner;
@@ -65,10 +65,7 @@ namespace
                 if (ignoreCallbacks)
                     return;
 
-                owner.setAecStrengthPercent (static_cast<float> (strengthSlider.getValue()));
-
-                if (auto* aec = owner.getAecProcessor())
-                    aec->setStrength (static_cast<float> (strengthSlider.getValue()));
+                owner.getEngine().setAecStrength (static_cast<float> (strengthSlider.getValue()));
             };
             addAndMakeVisible (strengthSlider);
 
@@ -85,8 +82,8 @@ namespace
                 if (ignoreCallbacks)
                     return;
 
-                owner.setReferenceGainDb (static_cast<float> (gainSlider.getValue()));
-                owner.reloadActivePlugins();
+                getSettings().setReferenceGainDb (static_cast<float> (gainSlider.getValue()));
+                owner.getEngine().rebuildGraph();
             };
             addAndMakeVisible (gainSlider);
 
@@ -116,10 +113,10 @@ namespace
         {
             ignoreCallbacks = true;
 
-            aecToggle.setToggleState (owner.isAecEnabled(), juce::dontSendNotification);
-            nrToggle.setToggleState (owner.isNrEnabled(), juce::dontSendNotification);
-            strengthSlider.setValue (owner.getAecStrengthPercent(), juce::dontSendNotification);
-            gainSlider.setValue (owner.getReferenceGainDb(), juce::dontSendNotification);
+            aecToggle.setToggleState (getSettings().isAecEnabled(), juce::dontSendNotification);
+            nrToggle.setToggleState (getSettings().isNrEnabled(), juce::dontSendNotification);
+            strengthSlider.setValue (getSettings().getAecStrengthPercent(), juce::dontSendNotification);
+            gainSlider.setValue (getSettings().getReferenceGainDb(), juce::dontSendNotification);
 
            #if JUCE_WINDOWS
             rebuildReferenceCombo();
@@ -179,17 +176,17 @@ namespace
             for (int i = 0; i < outputDevices.size(); ++i)
                 referenceCombo.addItem (outputDevices.getReference (i).name, 4 + i);
 
-            if (! owner.shouldUseSystemLoopbackReference())
+            if (! getSettings().useSystemLoopbackReference())
             {
                 referenceCombo.setSelectedId (1, juce::dontSendNotification);
             }
-            else if (owner.getReferenceDeviceId().isEmpty())
+            else if (getSettings().getReferenceDeviceId().isEmpty())
             {
                 referenceCombo.setSelectedId (3, juce::dontSendNotification);
             }
             else
             {
-                const juce::String selectedId = owner.getReferenceDeviceId();
+                const juce::String selectedId = getSettings().getReferenceDeviceId();
                 int matchedId = 3;
 
                 for (int i = 0; i < outputDevices.size(); ++i)
@@ -211,17 +208,17 @@ namespace
 
             if (selectedId == 1)
             {
-                owner.setUseSystemLoopbackReference (false);
+                getSettings().setUseSystemLoopbackReference (false);
             }
             else if (selectedId == 2)
             {
-                owner.setUseSystemLoopbackReference (true);
-                owner.setReferenceDeviceId ({});
+                getSettings().setUseSystemLoopbackReference (true);
+                getSettings().setReferenceDeviceId ({});
             }
             else if (selectedId == 3)
             {
-                owner.setUseSystemLoopbackReference (true);
-                owner.setReferenceDeviceId ({});
+                getSettings().setUseSystemLoopbackReference (true);
+                getSettings().setReferenceDeviceId ({});
             }
             else if (selectedId >= 4)
             {
@@ -230,31 +227,31 @@ namespace
 
                 if (juce::isPositiveAndBelow (listIndex, outputDevices.size()))
                 {
-                    owner.setUseSystemLoopbackReference (true);
-                    owner.setReferenceDeviceId (outputDevices.getReference (listIndex).id);
+                    getSettings().setUseSystemLoopbackReference (true);
+                    getSettings().setReferenceDeviceId (outputDevices.getReference (listIndex).id);
                 }
             }
 
-            owner.reloadActivePlugins();
+            owner.getEngine().rebuildGraph();
         }
        #endif
 
         void applyAecToggle()
         {
-            owner.setAecEnabled (aecToggle.getToggleState());
-            owner.reloadActivePlugins();
+            getSettings().setAecEnabled (aecToggle.getToggleState());
+            owner.getEngine().rebuildGraph();
             refreshFromOwner();
         }
 
         void applyNrToggle()
         {
-            owner.setNrEnabled (nrToggle.getToggleState());
-            owner.reloadActivePlugins();
+            getSettings().setNrEnabled (nrToggle.getToggleState());
+            owner.getEngine().rebuildGraph();
         }
 
         void updateControlStates()
         {
-            const bool aecOn = owner.isAecEnabled();
+            const bool aecOn = getSettings().isAecEnabled();
             strengthLabel.setEnabled (aecOn);
             strengthSlider.setEnabled (aecOn);
             gainLabel.setEnabled (aecOn);
@@ -290,11 +287,11 @@ namespace
             addAndMakeVisible (listBox);
 
             editButton.setButtonText ("Edit");
-            editButton.onClick = [this] { performOnSelection (&IconMenu::openPluginEditorForSortedIndex); };
+            editButton.onClick = [this] { performOnSelection ([this] (int row) { owner.openPluginEditor (row); }); };
             addAndMakeVisible (editButton);
 
             bypassButton.setButtonText ("Bypass");
-            bypassButton.onClick = [this] { performOnSelection (&IconMenu::togglePluginBypass); refreshList(); };
+            bypassButton.onClick = [this] { performOnSelection ([this] (int row) { owner.getEngine().togglePluginBypass (row); }); refreshList(); };
             addAndMakeVisible (bypassButton);
 
             moveUpButton.setButtonText ("Move Up");
@@ -305,7 +302,7 @@ namespace
                 if (row <= 0)
                     return;
 
-                owner.movePluginUp (row);
+                owner.getEngine().movePluginUp (row);
                 refreshList (row - 1);
             };
             addAndMakeVisible (moveUpButton);
@@ -318,7 +315,7 @@ namespace
                 if (row < 0 || row >= static_cast<int> (plugins.size()) - 1)
                     return;
 
-                owner.movePluginDown (row);
+                owner.getEngine().movePluginDown (row);
                 refreshList (row + 1);
             };
             addAndMakeVisible (moveDownButton);
@@ -331,7 +328,7 @@ namespace
                 if (row < 0)
                     return;
 
-                owner.deletePluginAtSortedIndex (row);
+                owner.getEngine().removePlugin (row);
                 refreshList();
             };
             addAndMakeVisible (deleteButton);
@@ -345,7 +342,7 @@ namespace
 
         void refreshList (int selectRow = -1)
         {
-            plugins = owner.getTimeSortedPluginList();
+            plugins = owner.getPlugins().getSortedPlugins();
             listBox.updateContent();
             listBox.repaint();
 
@@ -385,7 +382,7 @@ namespace
                 g.fillAll (juce::Colours::lightblue.withAlpha (0.35f));
 
             const auto& plugin = plugins[static_cast<size_t> (row)];
-            const bool bypassed = owner.isPluginBypassed (plugin);
+            const bool bypassed = owner.getPlugins().isBypassed (plugin);
             juce::String text = plugin.name;
 
             if (bypassed)
@@ -404,18 +401,18 @@ namespace
         void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override
         {
             if (juce::isPositiveAndBelow (row, static_cast<int> (plugins.size())))
-                owner.openPluginEditorForSortedIndex (row);
+                owner.openPluginEditor (row);
         }
 
     private:
-        using PluginAction = void (IconMenu::*) (int);
+        using PluginAction = std::function<void (int)>;
 
         void performOnSelection (PluginAction action)
         {
             const int row = listBox.getSelectedRow();
 
             if (juce::isPositiveAndBelow (row, static_cast<int> (plugins.size())))
-                (owner.*action) (row);
+                action (row);
         }
 
         void updateButtons()
@@ -433,7 +430,7 @@ namespace
         void showAddPluginMenu()
         {
             juce::PopupMenu menu;
-            owner.getKnownPluginList().addToMenu (menu, owner.getPluginSortMethod());
+            owner.getPlugins().getKnownPlugins().addToMenu (menu, owner.getPlugins().getSortMethod());
 
             menu.showMenuAsync (juce::PopupMenu::Options(),
                                 [this] (int result)
@@ -441,11 +438,11 @@ namespace
                                     if (result <= 0)
                                         return;
 
-                                    const int index = owner.getKnownPluginList().getIndexChosenByMenu (result);
+                                    const int index = owner.getPlugins().getKnownPlugins().getIndexChosenByMenu (result);
 
                                     if (index >= 0)
                                     {
-                                        owner.addActivePlugin (*owner.getKnownPluginList().getType (index));
+                                        owner.getEngine().addPlugin (*owner.getPlugins().getKnownPlugins().getType (index));
                                         refreshList();
                                     }
                                 });
@@ -519,7 +516,7 @@ SettingsWindow::SettingsWindow (IconMenu& owner_)
     setSize (560, 520);
     centreWithSize (getWidth(), getHeight());
 
-    restoreWindowStateFromString (getAppProperties().getUserSettings()->getValue ("settingsWindowPos"));
+    restoreWindowStateFromString (getSettings().getWindowState (AppSettings::Window::settings));
     centreWithSize (getWidth(), getHeight());
     setVisible (true);
     toFront (true);
@@ -527,7 +524,7 @@ SettingsWindow::SettingsWindow (IconMenu& owner_)
 
 SettingsWindow::~SettingsWindow()
 {
-    getAppProperties().getUserSettings()->setValue ("settingsWindowPos", getWindowStateAsString());
+    getSettings().setWindowState (AppSettings::Window::settings, getWindowStateAsString());
     clearContentComponent();
 }
 

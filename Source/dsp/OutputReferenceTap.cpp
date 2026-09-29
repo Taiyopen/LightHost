@@ -15,8 +15,9 @@ bool OutputReferenceTap::isBusesLayoutSupported (const BusesLayout& layouts) con
     return in == out && (in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
 }
 
-void OutputReferenceTap::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
+void OutputReferenceTap::prepareToPlay (double /*sampleRate*/, int samplesPerBlock)
 {
+    mono.assign (static_cast<size_t> (samplesPerBlock), 0.0f);
 }
 
 void OutputReferenceTap::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -30,10 +31,14 @@ void OutputReferenceTap::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     if (numSamples == 0 || numChannels == 0)
         return;
 
-    if (! feedsReference)
+    if (! feedsReference.load())
         return;
 
-    std::vector<float> mono (static_cast<size_t> (numSamples));
+    // 主機給的區塊比 prepareToPlay 宣告的大時才會配置（少見）
+    if (static_cast<int> (mono.size()) < numSamples)
+        mono.resize (static_cast<size_t> (numSamples));
+
+    const float currentGain = gain.load();
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -41,7 +46,7 @@ void OutputReferenceTap::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         for (int ch = 0; ch < numChannels; ++ch)
             sum += buffer.getReadPointer (ch)[i];
 
-        mono[static_cast<size_t> (i)] = static_cast<float> ((sum / static_cast<double> (numChannels)) * gain);
+        mono[static_cast<size_t> (i)] = static_cast<float> ((sum / static_cast<double> (numChannels)) * currentGain);
     }
 
     aec->pushReference (mono.data(), numSamples);

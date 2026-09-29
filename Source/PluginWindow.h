@@ -1,8 +1,6 @@
 #ifndef PluginWindow_h
 #define PluginWindow_h
 
-ApplicationProperties& getAppProperties();
-
 class PluginWindow  : public DocumentWindow
 {
 public:

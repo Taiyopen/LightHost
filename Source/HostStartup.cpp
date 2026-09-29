@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "IconMenu.hpp"
+#include "AppSettings.h"
 #include "AppTheme.h"
 
 #if ! (JUCE_PLUGINHOST_VST || JUCE_PLUGINHOST_VST3 || JUCE_PLUGINHOST_AU)
@@ -22,6 +23,7 @@ public:
 
         appProperties = std::make_unique<ApplicationProperties>();
         appProperties->setStorageParameters (options);
+        settings = std::make_unique<AppSettings> (*appProperties);
 
         applySystemColourScheme (lookAndFeel);
         LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
@@ -36,6 +38,7 @@ public:
     void shutdown() override
     {
         mainWindow = nullptr;
+        settings = nullptr;
         appProperties = nullptr;
         LookAndFeel::setDefaultLookAndFeel (nullptr);
     }
@@ -53,11 +56,12 @@ public:
         return getParameter ("-multi-instance").size() == 2;
     }
 
-    ApplicationProperties& getApplicationProperties() { return *appProperties; }
+    AppSettings& getSettings() { return *settings; }
     ApplicationCommandManager commandManager;
 
 private:
     std::unique_ptr<ApplicationProperties> appProperties;
+    std::unique_ptr<AppSettings> settings;
     LookAndFeel_V4 lookAndFeel;
     std::unique_ptr<IconMenu> mainWindow;
 
@@ -98,9 +102,9 @@ ApplicationCommandManager& getCommandManager()
     return getApp().commandManager;
 }
 
-ApplicationProperties& getAppProperties()
+AppSettings& getSettings()
 {
-    return getApp().getApplicationProperties();
+    return getApp().getSettings();
 }
 
 START_JUCE_APPLICATION (PluginHostApp)

@@ -4,7 +4,7 @@
 
 /**
  * 在此實作你的降噪演算法。
- * 完成後在 IconMenu.cpp 的 loadActivePlugins() 中呼叫：
+ * 完成後在 audio/AudioEngine.cpp 的 rebuildGraph() 中呼叫：
  *   nrProcessor->setAlgorithm (std::make_unique<CustomNoiseReducer>());
  */
 class CustomNoiseReducer : public INoiseReducer

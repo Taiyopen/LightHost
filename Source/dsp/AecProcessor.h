@@ -9,12 +9,7 @@
 
 namespace webrtc
 {
-class AudioBuffer;
-class EchoControl;
 class EchoCanceller3Config;
-class HighPassFilter;
-class PushSincResampler;
-class StreamConfig;
 }
 
 /** 以 WebRTC AEC3 做回音消除；參考訊號來自喇叭 loopback */
@@ -46,63 +41,54 @@ public:
     /** 由 LoopbackCapture 或 OutputReferenceTap 呼叫，餵入喇叭參考訊號 */
     void pushReference (const float* samples, int numSamples);
 
-    /** AEC 強度 25–150（100 = WebRTC 預設） */
+    /** AEC 強度 25–150（100 = WebRTC 預設）。可在 UI 執行緒呼叫，會在背後換一組新引擎 */
     void setStrength (float strengthPercent);
     float getStrength() const;
 
     AecProcessorStats getStats() const;
 
 private:
+    /** 一組 AEC3 物件與音訊執行緒用的暫存區；整組建好後才換上，音訊執行緒不會看到建到一半的狀態 */
+    struct Engine;
+
     static webrtc::EchoCanceller3Config makeAecConfig (float strengthPercent);
     static constexpr int referenceRingSize = 65536;
     static constexpr int numChannels = 1;
 
     static int pickProcessingSampleRate (int hostSampleRate);
-    void createAec3 (int processingRate);
-    void destroyAec3();
+    std::unique_ptr<Engine> createEngine() const;
+    void installEngine (std::unique_ptr<Engine> newEngine);
     void resyncReferenceReadPointer();
     bool readReferenceFrame (float* dest, int numSamples);
-    void feedRenderFrame (const float* frame, int frameSize);
-    void processCaptureFrame (const float* micFrame, float* outputFrame, int frameSize);
-    void processAlignedFramePair (const float* refHostFrame, const float* micHostFrame, int hostFrameSize);
+    void feedRenderFrame (Engine& engine, const float* frame);
+    void processCaptureFrame (Engine& engine, const float* micFrame, float* outputFrame);
+    void processAlignedFramePair (Engine& engine, const float* refHostFrame, const float* micHostFrame);
     void updateLevelDb (std::atomic<float>& target, float blockRms);
     void updateAttenuationDb (std::atomic<float>& target, float attenuationDb);
     void updateSmoothedDb (std::atomic<float>& target, float db);
     int getReferenceLeadSamples() const;
     int getMaxAllowedReferenceLeadSamples() const;
 
+    // 以下只在 prepareToPlay 改動
     double hostSampleRate = 44100.0;
     int blockSize = 512;
     int processingSampleRate = 48000;
     int frameSize = 480;
     int hostFrameSize = 480;
     int referenceDelaySamples = 512;
-    int lastReferenceLeadForAec = 0;
     bool resampling = false;
-    float strengthPercent = 100.0f;
+    std::atomic<bool> prepared { false };
 
-    std::unique_ptr<webrtc::EchoControl> echoController;
-    std::unique_ptr<webrtc::HighPassFilter> hpFilter;
-    std::unique_ptr<webrtc::AudioBuffer> renderBuffer;
-    std::unique_ptr<webrtc::AudioBuffer> captureBuffer;
-    std::unique_ptr<webrtc::PushSincResampler> refResampler;
-    std::unique_ptr<webrtc::PushSincResampler> capInResampler;
-    std::unique_ptr<webrtc::PushSincResampler> capOutResampler;
+    int lastReferenceLeadForAec = 0;
+    std::atomic<float> strengthPercent { 100.0f };
+
+    // 音訊執行緒只用 try_lock 拿這把鎖；拿不到就讓該段原音通過
+    std::unique_ptr<Engine> engine;
+    std::mutex engineMutex;
 
     std::vector<float> referenceRing;
     std::atomic<int> referenceWritePos { 0 };
     std::atomic<int> referenceReadPos  { 0 };
-
-    std::vector<float> capHostPending;
-    std::vector<float> capOutPending;
-    std::vector<float> refHostFrameScratch;
-    std::vector<float> refResampleScratch;
-    std::vector<float> capResampleScratch;
-    std::vector<float> capFrameScratch;
-    std::vector<float> capOutResampleScratch;
-    std::vector<float*> channelPtrScratch;
-
-    std::mutex captureMutex;
 
     std::atomic<float> referenceLevelDb { -100.0f };
     std::atomic<float> micRawLevelDb { -100.0f };
