@@ -11,6 +11,7 @@ Light Host：Windows 系統列常駐的 VST3 外掛宿主，麥克風經「回�
 | `Source/IconMenu.*` | 系統列圖示與左右鍵選單；擁有 `PluginChain`、`AudioEngine` 與各視窗 |
 | `Source/plugins/PluginChain.*` | 外掛清單（掃描到的／掛在鏈上的）、排序、略過；只管資料，不碰音訊圖 |
 | `Source/audio/AudioEngine.*` | 音訊裝置、處理圖、外掛狀態存取、AEC 參考訊號擷取；`rebuildGraph()` 重建整張圖 |
+| `Source/update/Updater.*` | 自動更新：查 GitHub 最新 Release、下載安裝檔、以 `/SILENT` 執行後讓 App 存檔結束 |
 | `Source/audio/LoopbackCapture.*` | 獨立執行緒擷取 WASAPI loopback 當 AEC 參考 |
 | `Source/dsp/AecProcessor.*` | AEC3 包裝；參考訊號環形緩衝、重新取樣、幀對齊 |
 | `Source/dsp/OutputReferenceTap.*` | 把送往喇叭的訊號餵給 AEC 當參考（App Output 模式） |
@@ -26,6 +27,7 @@ Light Host：Windows 系統列常駐的 VST3 外掛宿主，麥克風經「回�
 
 - 新設定 → `AppSettings` 加 getter/setter（鍵名放 `Keys`）→ UI 呼叫 → 需要重建就 `getEngine().rebuildGraph()`
 - 外掛鏈操作 → 走 `AudioEngine::addPlugin/removePlugin/...`，它會「先存狀態 → 改清單 → 重建」；不要直接改 `PluginChain` 後自己重建，外掛狀態會對錯位置
+- 發新版 → 改 `CMakeLists.txt` 與 `installer/LightHost.iss` 的版本號，Release 必須附上檔名以 `-Setup.exe` 結尾的安裝檔，舊版的自動更新才找得到
 - 選單項目 → `IconMenu.cpp` 的 `LeftMenu` / `RightMenu` 與對應的 `handle...Menu`
 
 ## 即時音訊執行緒的規矩

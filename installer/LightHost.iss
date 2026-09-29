@@ -1,5 +1,5 @@
 #define MyAppName "Light Host"
-#define MyAppVersion "1.4.0"
+#define MyAppVersion "1.5.0"
 #define MyAppPublisher "LightHost"
 #define MyAppExeName "Light Host.exe"
 
@@ -54,3 +54,5 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; App 內自動更新是用 /SILENT 執行，裝完要自己重新開啟（postinstall 預設以原本的使用者身分執行，不會帶系統管理員權限）
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait postinstall skipifnotsilent

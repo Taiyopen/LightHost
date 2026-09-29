@@ -453,6 +453,97 @@ namespace
         juce::ListBox listBox;
         juce::TextButton editButton, bypassButton, moveUpButton, moveDownButton, deleteButton, addButton;
     };
+
+    class UpdatesSettingsTab : public juce::Component,
+                               private juce::ChangeListener
+    {
+    public:
+        explicit UpdatesSettingsTab (Updater& updaterIn)
+            : updater (updaterIn)
+        {
+            autoCheckToggle.setButtonText ("Check for updates automatically");
+            autoCheckToggle.setToggleState (getSettings().isAutoUpdateCheckEnabled(), juce::dontSendNotification);
+            autoCheckToggle.onClick = [this]
+            {
+                const bool enabled = autoCheckToggle.getToggleState();
+                getSettings().setAutoUpdateCheckEnabled (enabled);
+                updater.setAutoCheck (enabled);
+            };
+            addAndMakeVisible (autoCheckToggle);
+
+            versionLabel.setText ("Current version: " + Updater::getCurrentVersion(), juce::dontSendNotification);
+            addAndMakeVisible (versionLabel);
+            addAndMakeVisible (statusLabel);
+
+            checkButton.setButtonText ("Check Now");
+            checkButton.onClick = [this] { updater.checkNow(); };
+            addAndMakeVisible (checkButton);
+
+            installButton.setButtonText ("Install Update");
+            installButton.onClick = [this] { updater.downloadAndInstall(); };
+            addAndMakeVisible (installButton);
+
+            updater.addChangeListener (this);
+            refresh();
+        }
+
+        ~UpdatesSettingsTab() override
+        {
+            updater.removeChangeListener (this);
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds().reduced (12);
+            const int rowHeight = 28;
+            const int gap = 8;
+
+            autoCheckToggle.setBounds (area.removeFromTop (rowHeight));
+            area.removeFromTop (gap);
+            versionLabel.setBounds (area.removeFromTop (rowHeight));
+            statusLabel.setBounds (area.removeFromTop (rowHeight));
+            area.removeFromTop (gap);
+
+            auto buttonRow = area.removeFromTop (rowHeight);
+            checkButton.setBounds (buttonRow.removeFromLeft (120));
+            buttonRow.removeFromLeft (8);
+            installButton.setBounds (buttonRow.removeFromLeft (140));
+        }
+
+    private:
+        void changeListenerCallback (juce::ChangeBroadcaster*) override
+        {
+            refresh();
+        }
+
+        void refresh()
+        {
+            using State = Updater::State;
+            const auto version = updater.getAvailableRelease().version;
+            juce::String status;
+
+            switch (updater.getState())
+            {
+                case State::idle:              status = "Not checked yet."; break;
+                case State::checking:          status = "Checking for updates..."; break;
+                case State::upToDate:          status = "You have the latest version."; break;
+                case State::available:         status = "Version " + version + " is available."; break;
+                case State::downloading:       status = "Downloading version " + version + "..."; break;
+                case State::downloadFailed:    status = "Could not install the update: " + updater.getErrorMessage(); break;
+                case State::installerLaunched: status = "Starting the installer..."; break;
+                case State::checkFailed:       status = "Could not check for updates: " + updater.getErrorMessage(); break;
+            }
+
+            statusLabel.setText (status, juce::dontSendNotification);
+            checkButton.setEnabled (updater.getState() != State::checking && updater.getState() != State::downloading);
+            installButton.setEnabled (updater.canInstall());
+        }
+
+        Updater& updater;
+        juce::ToggleButton autoCheckToggle;
+        juce::Label versionLabel, statusLabel;
+        juce::TextButton checkButton, installButton;
+    };
 }
 
 class SettingsWindow::SettingsPanel : public juce::Component,
@@ -464,11 +555,13 @@ public:
           tabs (juce::TabbedButtonBar::TabsAtTop),
           audioTab (ownerIn),
           aecTab (ownerIn),
-          pluginTab (ownerIn)
+          pluginTab (ownerIn),
+          updatesTab (ownerIn.getUpdater())
     {
         tabs.addTab ("Audio", juce::Colours::transparentBlack, &audioTab, false);
         tabs.addTab ("AEC", juce::Colours::transparentBlack, &aecTab, false);
         tabs.addTab ("Plugins", juce::Colours::transparentBlack, &pluginTab, false);
+        tabs.addTab ("Updates", juce::Colours::transparentBlack, &updatesTab, false);
         tabs.setCurrentTabIndex (0);
         tabs.getTabbedButtonBar().addChangeListener (this);
         addAndMakeVisible (tabs);
@@ -500,6 +593,7 @@ private:
     AudioSettingsTab audioTab;
     AecSettingsTab aecTab;
     PluginSettingsTab pluginTab;
+    UpdatesSettingsTab updatesTab;
 };
 
 SettingsWindow::SettingsWindow (IconMenu& owner_)

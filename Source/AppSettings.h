@@ -28,6 +28,10 @@ public:
     float getAecStrengthPercent() const;
     void setAecStrengthPercent (float strengthPercent);
 
+    // 自動檢查更新
+    bool isAutoUpdateCheckEnabled() const;
+    void setAutoUpdateCheckEnabled (bool enabled);
+
     // 系統列圖示顏色："white" 或 "black"
     juce::String getIconColour() const;
     void setIconColour (const juce::String& colour);

@@ -3,13 +3,15 @@
 #include <JuceHeader.h>
 #include "audio/AudioEngine.h"
 #include "plugins/PluginChain.h"
+#include "update/Updater.h"
 
 class AecMonitorWindow;
 class SettingsWindow;
 
 /** 系統列圖示與選單；擁有外掛清單、音訊引擎與各個視窗 */
 class IconMenu : public SystemTrayIconComponent,
-                 private Timer
+                 private Timer,
+                 private ChangeListener
 {
 public:
     IconMenu();
@@ -19,6 +21,7 @@ public:
 
     PluginChain& getPlugins() { return plugins; }
     AudioEngine& getEngine() { return engine; }
+    Updater& getUpdater() { return updater; }
 
     void openSettingsWindow();
     void closeSettingsWindow();
@@ -35,12 +38,16 @@ private:
     std::string exec (const char* cmd);
    #endif
     void timerCallback() override;
+    void changeListenerCallback (ChangeBroadcaster*) override;
     void openPluginListWindow();
     void setIcon();
 
     // 宣告順序即建構順序：外掛清單要比引擎先建、後毀
     PluginChain plugins;
     AudioEngine engine { plugins };
+    // 要比各視窗先建、後毀：設定視窗會監聽它
+    Updater updater;
+    juce::String notifiedUpdateVersion;
 
     PopupMenu menu;
     bool menuIconLeftClicked = false;

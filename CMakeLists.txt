@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(LightHost VERSION 1.4.0 LANGUAGES CXX)
+project(LightHost VERSION 1.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,6 +46,7 @@ target_sources(LightHost PRIVATE
     Source/PluginWindow.cpp
     Source/plugins/PluginChain.cpp
     Source/audio/AudioEngine.cpp
+    Source/update/Updater.cpp
     Source/dsp/AecProcessor.cpp
     Source/dsp/NoiseReducerProcessor.cpp
     Source/dsp/SimpleNoiseReducer.cpp

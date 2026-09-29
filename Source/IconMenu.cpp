@@ -20,7 +20,8 @@ namespace
             editPlugins = 2,
             aecToggle   = 6000000,
             nrToggle    = 6100000,
-            aecMonitor  = 6150000
+            aecMonitor  = 6150000,
+            installUpdate = 7000000
         };
     }
 
@@ -88,9 +89,50 @@ IconMenu::IconMenu()
 {
     setIcon();
     setIconTooltip (JUCEApplication::getInstance()->getApplicationName());
+
+    updater.addChangeListener (this);
+    updater.setAutoCheck (getSettings().isAutoUpdateCheckEnabled());
 }
 
-IconMenu::~IconMenu() = default;
+IconMenu::~IconMenu()
+{
+    updater.removeChangeListener (this);
+}
+
+void IconMenu::changeListenerCallback (ChangeBroadcaster*)
+{
+    switch (updater.getState())
+    {
+        case Updater::State::available:
+        {
+            // 同一個版本只通知一次
+            const auto version = updater.getAvailableRelease().version;
+
+            if (version != notifiedUpdateVersion)
+            {
+                notifiedUpdateVersion = version;
+                showInfoBubble ("Light Host " + version + " is available",
+                                "Click the tray icon to install the update.");
+            }
+            break;
+        }
+
+        case Updater::State::downloadFailed:
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                    "Light Host",
+                                                    "Could not install the update.\n\n" + updater.getErrorMessage());
+            break;
+
+        case Updater::State::installerLaunched:
+            // 安裝檔會覆蓋執行中的檔案，先存外掛狀態再結束
+            engine.savePluginStates();
+            JUCEApplication::getInstance()->systemRequestedQuit();
+            break;
+
+        default:
+            break;
+    }
+}
 
 void IconMenu::openAecMonitorWindow()
 {
@@ -192,6 +234,17 @@ void IconMenu::timerCallback()
     if (menuIconLeftClicked)
     {
         const auto& settings = getSettings();
+
+        if (updater.canInstall())
+        {
+            menu.addItem (LeftMenu::installUpdate, "Install Update " + updater.getAvailableRelease().version + "...");
+            menu.addSeparator();
+        }
+        else if (updater.getState() == Updater::State::downloading)
+        {
+            menu.addItem (LeftMenu::installUpdate, "Downloading Update...", false);
+            menu.addSeparator();
+        }
 
         menu.addItem (LeftMenu::settings, "Settings...");
         menu.addItem (LeftMenu::editPlugins, "Edit Plugins");
@@ -317,6 +370,10 @@ void IconMenu::handleLeftClickMenu (int id)
 
         case LeftMenu::aecMonitor:
             openAecMonitorWindow();
+            return;
+
+        case LeftMenu::installUpdate:
+            updater.downloadAndInstall();
             return;
 
         default:

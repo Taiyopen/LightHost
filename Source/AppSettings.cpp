@@ -12,6 +12,7 @@ namespace
         constexpr auto referenceGainDb      = "aecReferenceGainDb";
         constexpr auto aecStrengthPercent   = "aecStrengthPercent";
         constexpr auto icon                 = "icon";
+        constexpr auto autoUpdateCheck      = "autoCheckUpdates";
         constexpr auto audioDeviceState     = "audioDeviceState";
         constexpr auto knownPluginList      = "pluginList";
         constexpr auto activePluginList     = "pluginListActive";
@@ -91,6 +92,17 @@ float AppSettings::getAecStrengthPercent() const
 void AppSettings::setAecStrengthPercent (float strengthPercent)
 {
     getFile().setValue (Keys::aecStrengthPercent, strengthPercent);
+    save();
+}
+
+bool AppSettings::isAutoUpdateCheckEnabled() const
+{
+    return getFile().getBoolValue (Keys::autoUpdateCheck, true);
+}
+
+void AppSettings::setAutoUpdateCheckEnabled (bool enabled)
+{
+    getFile().setValue (Keys::autoUpdateCheck, enabled);
     save();
 }
 
