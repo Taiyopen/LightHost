@@ -1,5 +1,5 @@
 #define MyAppName "Light Host"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "LightHost"
 #define MyAppExeName "Light Host.exe"
 
@@ -16,7 +16,7 @@ DisableProgramGroupPage=yes
 LicenseFile=..\license
 OutputDir=..\dist
 OutputBaseFilename=LightHost-{#MyAppVersion}-Setup
-SetupIconFile=..\build\LightHost_artefacts\JuceLibraryCode\icon.ico
+SetupIconFile=..\build-new\LightHost_artefacts\JuceLibraryCode\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/max
 SolidCompression=yes
@@ -41,7 +41,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\build\LightHost_artefacts\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build-new\LightHost_artefacts\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "redist\msvcp140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "redist\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "redist\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion

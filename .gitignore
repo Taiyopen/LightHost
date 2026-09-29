@@ -2,6 +2,7 @@
 Builds/
 build/
 build2/
+build-new/
 cmake-build-*/
 dist/
 JuceLibraryCode/

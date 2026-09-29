@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(LightHost VERSION 1.3.0 LANGUAGES CXX)
+project(LightHost VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Visual Studio 產生器預設一個專案內逐檔編譯；/MP 讓同一專案的檔案平行編譯（含 webrtc-aec3）
+if (MSVC)
+    add_compile_options(/MP)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -36,8 +41,11 @@ juce_add_gui_app(LightHost
 
 target_sources(LightHost PRIVATE
     Source/HostStartup.cpp
+    Source/AppSettings.cpp
     Source/IconMenu.cpp
     Source/PluginWindow.cpp
+    Source/plugins/PluginChain.cpp
+    Source/audio/AudioEngine.cpp
     Source/dsp/AecProcessor.cpp
     Source/dsp/NoiseReducerProcessor.cpp
     Source/dsp/SimpleNoiseReducer.cpp
