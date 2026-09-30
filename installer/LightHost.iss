@@ -1,5 +1,5 @@
 #define MyAppName "Light Host"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.6.0"
 #define MyAppPublisher "LightHost"
 #define MyAppExeName "Light Host.exe"
 
@@ -46,6 +46,17 @@ Source: "redist\msvcp140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "redist\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "redist\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\license"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+; 降噪：推論引擎、DeepFilterNet 與模型檔（與 CMakeLists.txt 的 LIGHTHOST_RUNTIME_DLLS／LIGHTHOST_MODEL_FILES 同步）
+Source: "..\build-new\LightHost_artefacts\Release\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build-new\LightHost_artefacts\Release\df.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build-new\LightHost_artefacts\Release\models\*"; DestDir: "{app}\models"; Flags: ignoreversion
+; 第三方授權
+Source: "..\third_party\rnnoise\COPYING"; DestDir: "{app}\licenses"; DestName: "RNNoise.txt"; Flags: ignoreversion
+Source: "..\third_party\onnxruntime\LICENSE"; DestDir: "{app}\licenses"; DestName: "ONNXRuntime.txt"; Flags: ignoreversion
+Source: "..\third_party\onnxruntime\ThirdPartyNotices.txt"; DestDir: "{app}\licenses"; DestName: "ONNXRuntime-ThirdPartyNotices.txt"; Flags: ignoreversion
+Source: "..\third_party\deepfilternet\LICENSE-MIT"; DestDir: "{app}\licenses"; DestName: "DeepFilterNet.txt"; Flags: ignoreversion
+Source: "..\third_party\fastenhancer\LICENSE"; DestDir: "{app}\licenses"; DestName: "FastEnhancer.txt"; Flags: ignoreversion
+Source: "..\third_party\gtcrn\LICENSE"; DestDir: "{app}\licenses"; DestName: "GTCRN.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
