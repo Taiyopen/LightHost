@@ -105,6 +105,8 @@ public:
         title.setJustificationType (juce::Justification::centredLeft);
         addAndMakeVisible (title);
 
+        addAndMakeVisible (latencyRow);
+        addAndMakeVisible (latencyBreakdownRow);
         addAndMakeVisible (statusRow);
         addAndMakeVisible (referenceSourceRow);
         addAndMakeVisible (loopbackRow);
@@ -113,6 +115,7 @@ public:
         addAndMakeVisible (referenceDelayRow);
         addAndMakeVisible (erleRow);
         addAndMakeVisible (underrunsRow);
+        addAndMakeVisible (driftRow);
         addAndMakeVisible (samplesRow);
 
         for (auto& channel : channels)
@@ -135,6 +138,22 @@ public:
         addAndMakeVisible (hint);
     }
 
+    void updateLatency (const AudioEngine::LatencyReport& report)
+    {
+        if (! report.hasDevice)
+        {
+            latencyRow.setValue ("No audio device");
+            latencyBreakdownRow.setValue ("-");
+            return;
+        }
+
+        auto ms = [] (double v) { return juce::String (juce::roundToInt (v)); };
+        latencyRow.setValue (ms (report.totalMs()) + " ms");
+        latencyBreakdownRow.setValue ("in " + ms (report.inputMs) + " / AEC " + ms (report.aecMs)
+                                      + " / NR " + ms (report.noiseMs) + " / plugins " + ms (report.pluginsMs)
+                                      + " / out " + ms (report.outputMs));
+    }
+
     void updateSnapshot (const AecMonitorSnapshot& snap)
     {
         statusRow.setValue (snap.aecEnabled ? "Enabled" : "Disabled");
@@ -147,6 +166,7 @@ public:
                                     + " / " + juce::String (snap.referenceTargetDelayMs, 1) + " ms");
         erleRow.setValue (juce::String (snap.erleDb, 1) + " dB");
         underrunsRow.setValue (juce::String (snap.referenceUnderruns));
+        driftRow.setValue ((snap.referenceDriftPpm >= 0.0f ? "+" : "") + juce::String (snap.referenceDriftPpm, 0) + " ppm");
         samplesRow.setValue ("ref " + juce::String (snap.referenceSamplesReceived)
                              + " / proc " + juce::String (snap.samplesProcessed));
 
@@ -162,6 +182,8 @@ public:
         title.setBounds (area.removeFromTop (28));
         area.removeFromTop (8);
 
+        layoutRow (area, latencyRow);
+        layoutRow (area, latencyBreakdownRow);
         layoutRow (area, statusRow);
         layoutRow (area, referenceSourceRow);
         layoutRow (area, loopbackRow);
@@ -170,6 +192,7 @@ public:
         layoutRow (area, referenceDelayRow);
         layoutRow (area, erleRow);
         layoutRow (area, underrunsRow);
+        layoutRow (area, driftRow);
         layoutRow (area, samplesRow);
 
         area.removeFromTop (8);
@@ -207,14 +230,17 @@ private:
 
     IconMenu& owner;
     juce::Label title, hint;
-    StatRow statusRow { "Status" },
+    StatRow latencyRow { "Mic Latency (total)" },
+            latencyBreakdownRow { "Latency Breakdown" },
+            statusRow { "Status" },
             referenceSourceRow { "Reference Source" },
             loopbackRow { "Loopback Thread" },
             referenceGainRow { "Reference Gain" },
             aecStrengthRow { "AEC Strength" },
             referenceDelayRow { "Ref Delay" },
             erleRow { "ERLE" },
-            underrunsRow { "Reference Underruns" },
+            underrunsRow { "Reference Resyncs" },
+            driftRow { "Clock Drift" },
             samplesRow { "Sample Counts" };
 
     std::array<ChannelMeter, 4> channels { {
@@ -235,8 +261,8 @@ AecMonitorWindow::AecMonitorWindow (IconMenu& owner_)
     setContentOwned (panel, true);
     setUsingNativeTitleBar (true);
     setResizable (true, false);
-    setResizeLimits (360, 520, 600, 800);
-    setSize (420, 560);
+    setResizeLimits (400, 592, 700, 872);
+    setSize (480, 632);
     centreWithSize (getWidth(), getHeight());
 
     restoreWindowStateFromString (getSettings().getWindowState (AppSettings::Window::aecMonitor));
@@ -264,5 +290,8 @@ void AecMonitorWindow::closeButtonPressed()
 void AecMonitorWindow::timerCallback()
 {
     if (panel != nullptr)
+    {
         panel->updateSnapshot (owner.getEngine().getAecMonitorSnapshot());
+        panel->updateLatency (owner.getEngine().getLatencyReport());
+    }
 }

@@ -21,7 +21,8 @@ namespace
             aecToggle   = 6000000,
             nrToggle    = 6100000,
             aecMonitor  = 6150000,
-            installUpdate = 7000000
+            installUpdate = 7000000,
+            pluginToggleBase = 7100000   // + 外掛在處理鏈中的順序
         };
     }
 
@@ -256,6 +257,19 @@ void IconMenu::timerCallback()
         if (settings.isAecEnabled())
             menu.addItem (LeftMenu::aecMonitor, "AEC Monitor...");
 
+        // 處理鏈上的外掛：打勾代表啟用，點一下瞬間切換略過
+        const auto chain = plugins.getSortedPlugins();
+
+        if (! chain.empty())
+        {
+            menu.addSeparator();
+            menu.addSectionHeader ("Plugin Chain");
+
+            for (int i = 0; i < (int) chain.size(); ++i)
+                menu.addItem (LeftMenu::pluginToggleBase + i, chain[(size_t) i].name, true,
+                              ! plugins.isBypassed (chain[(size_t) i]));
+        }
+
         menu.addSeparator();
         menu.addSectionHeader ("Available Plugins");
         plugins.getKnownPlugins().addToMenu (menu, plugins.getSortMethod());
@@ -364,8 +378,7 @@ void IconMenu::handleLeftClickMenu (int id)
             return;
 
         case LeftMenu::nrToggle:
-            settings.setNrEnabled (! settings.isNrEnabled());
-            engine.rebuildGraph();
+            engine.setNoiseReductionEnabled (! settings.isNrEnabled());
             return;
 
         case LeftMenu::aecMonitor:
@@ -378,6 +391,14 @@ void IconMenu::handleLeftClickMenu (int id)
 
         default:
             break;
+    }
+
+    const int chainIndex = id - LeftMenu::pluginToggleBase;
+
+    if (juce::isPositiveAndBelow (chainIndex, (int) plugins.getSortedPlugins().size()))
+    {
+        engine.togglePluginBypass (chainIndex);
+        return;
     }
 
     const int knownIndex = plugins.getKnownPlugins().getIndexChosenByMenu (id);

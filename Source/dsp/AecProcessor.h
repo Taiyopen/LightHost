@@ -57,8 +57,9 @@ private:
 
     static int pickProcessingSampleRate (int hostSampleRate);
     std::unique_ptr<Engine> createEngine() const;
+    int measureEngineLatency();
     void installEngine (std::unique_ptr<Engine> newEngine);
-    void resyncReferenceReadPointer();
+    void resetReferenceReader (int writeIndex);
     bool readReferenceFrame (float* dest, int numSamples);
     void feedRenderFrame (Engine& engine, const float* frame);
     void processCaptureFrame (Engine& engine, const float* micFrame, float* outputFrame);
@@ -67,6 +68,7 @@ private:
     void updateAttenuationDb (std::atomic<float>& target, float attenuationDb);
     void updateSmoothedDb (std::atomic<float>& target, float db);
     int getReferenceLeadSamples() const;
+    int getReferenceSlackSamples() const;
     int getMaxAllowedReferenceLeadSamples() const;
 
     // 以下只在 prepareToPlay 改動
@@ -80,6 +82,13 @@ private:
     std::atomic<bool> prepared { false };
 
     int lastReferenceLeadForAec = 0;
+
+    // 參考訊號的讀取端（只在音訊執行緒使用）：可落在樣本之間的讀取位置，用來追蹤兩邊時脈
+    double referenceReadPosition = 0.0;
+    double smoothedReferenceLead = 0.0;
+    double referenceDriftIntegral = 0.0;
+    int lastStoredReadPos = -1;
+    std::atomic<float> referenceDriftPpm { 0.0f };
     std::atomic<float> strengthPercent { 100.0f };
 
     // 音訊執行緒只用 try_lock 拿這把鎖；拿不到就讓該段原音通過

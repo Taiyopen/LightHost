@@ -1,11 +1,17 @@
 #include "NoiseReducerProcessor.h"
 
-NoiseReducerProcessor::NoiseReducerProcessor()
+NoiseReducerProcessor::NoiseReducerProcessor (std::unique_ptr<INoiseReducer> algorithmIn)
     : juce::AudioProcessor (BusesProperties()
                                 .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
                                 .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
-    setAlgorithm (std::make_unique<SimpleNoiseReducer>());
+    setAlgorithm (std::move (algorithmIn));
+}
+
+void NoiseReducerProcessor::setMaxAttenuationDb (float db)
+{
+    if (algorithm != nullptr)
+        algorithm->setMaxAttenuationDb (db);
 }
 
 bool NoiseReducerProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -26,13 +32,31 @@ void NoiseReducerProcessor::setAlgorithm (std::unique_ptr<INoiseReducer> newAlgo
 void NoiseReducerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     if (algorithm != nullptr)
+    {
         algorithm->prepare (sampleRate, samplesPerBlock);
+        setLatencySamples (juce::roundToInt (algorithm->getLatencySeconds() * sampleRate));
+    }
 }
 
 void NoiseReducerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
 
-    if (algorithm != nullptr)
-        algorithm->process (buffer);
+    if (algorithm == nullptr)
+        return;
+
+    if (! enabled.load())
+    {
+        needsReset = true;
+        return;
+    }
+
+    // 重新開啟時清掉關閉前留下的緩衝與模型狀態
+    if (needsReset)
+    {
+        algorithm->reset();
+        needsReset = false;
+    }
+
+    algorithm->process (buffer);
 }

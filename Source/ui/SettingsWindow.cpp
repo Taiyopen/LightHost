@@ -3,6 +3,8 @@
 #include "../AppSettings.h"
 #include "../AppTheme.h"
 #include "../audio/LoopbackDevices.h"
+#include "../dsp/noise/NoiseReducerFactory.h"
+#include "NoiseCompareWindow.h"
 
 namespace
 {
@@ -38,6 +40,157 @@ namespace
         juce::AudioDeviceSelectorComponent audioSettings;
     };
 
+    class RoutingSettingsTab : public juce::Component,
+                               private juce::ChangeListener
+    {
+    public:
+        explicit RoutingSettingsTab (IconMenu& owner_)
+            : owner (owner_)
+        {
+            hint.setText ("Processing: inputs sent through echo cancellation, noise reduction and plugins.\n"
+                          "Output columns: where each sound goes. Sounds sharing an input or output are mixed.",
+                          juce::dontSendNotification);
+            hint.setFont (juce::FontOptions { 12.0f });
+            hint.setColour (juce::Label::textColourId, juce::Colours::grey);
+            hint.setJustificationType (juce::Justification::topLeft);
+            addAndMakeVisible (hint);
+
+            viewport.setViewedComponent (&grid, false);
+            addAndMakeVisible (viewport);
+
+            // Audio 分頁換裝置或改勾選聲道時跟著更新
+            owner.getEngine().getDeviceManager().addChangeListener (this);
+            refresh();
+        }
+
+        ~RoutingSettingsTab() override
+        {
+            owner.getEngine().getDeviceManager().removeChangeListener (this);
+        }
+
+        void refresh()
+        {
+            auto& engine = owner.getEngine();
+            const auto routing = engine.getEffectiveRouting();
+            const auto inputs = engine.getActiveInputPairs();
+            const auto outputs = engine.getActiveOutputPairs();
+
+            toggles.clear();
+            labels.clear();
+
+            constexpr int rowLabelWidth = 220;
+            constexpr int columnWidth = 110;
+            constexpr int dividerGap = 24;   // Processing 欄與輸出欄之間的間隔
+            constexpr int rowHeight = 28;
+            constexpr int headerHeight = 40;
+            constexpr int firstOutputX = rowLabelWidth + columnWidth + dividerGap;
+
+            auto addLabel = [this] (const juce::String& text, juce::Rectangle<int> bounds, juce::Justification justification)
+            {
+                auto* label = labels.add (new juce::Label ({}, text));
+                label->setJustificationType (justification);
+                label->setMinimumHorizontalScale (0.6f);
+                label->setBounds (bounds);
+                grid.addAndMakeVisible (label);
+            };
+
+            auto addToggle = [this] (bool isOn, juce::Rectangle<int> cell, std::function<void (bool)> onChange)
+            {
+                auto* toggle = toggles.add (new juce::ToggleButton());
+                toggle->setToggleState (isOn, juce::dontSendNotification);
+                toggle->onClick = [toggle, onChange] { onChange (toggle->getToggleState()); };
+                toggle->setBounds (cell.withSizeKeepingCentre (24, cell.getHeight() - 4));
+                grid.addAndMakeVisible (toggle);
+            };
+
+            addLabel ("Processing", { rowLabelWidth, 0, columnWidth, headerHeight }, juce::Justification::centred);
+
+            for (size_t c = 0; c < outputs.size(); ++c)
+                addLabel (outputs[c].name, { firstOutputX + (int) c * columnWidth, 0, columnWidth, headerHeight },
+                          juce::Justification::centred);
+
+            struct Row
+            {
+                int source;
+                juce::String name;
+            };
+
+            std::vector<Row> rows { { Routing::processedChain, "Processed microphone" } };
+
+            for (const auto& pair : inputs)
+                rows.push_back ({ pair.index, pair.name + " (raw)" });
+
+            for (size_t r = 0; r < rows.size(); ++r)
+            {
+                const int y = headerHeight + (int) r * rowHeight;
+                const int source = rows[r].source;
+
+                addLabel (rows[r].name, { 0, y, rowLabelWidth, rowHeight }, juce::Justification::centredLeft);
+
+                // 處理後的聲音本身不能再送回處理鏈
+                if (source == Routing::processedChain)
+                {
+                    addLabel ("-", { rowLabelWidth, y, columnWidth, rowHeight }, juce::Justification::centred);
+                }
+                else
+                {
+                    addToggle (routing.isChainInput (source), { rowLabelWidth, y, columnWidth, rowHeight },
+                               [this, source] (bool isOn)
+                               {
+                                   auto updated = owner.getEngine().getEffectiveRouting();
+                                   updated.setChainInput (source, isOn);
+                                   owner.getEngine().setRouting (updated);
+                               });
+                }
+
+                for (size_t c = 0; c < outputs.size(); ++c)
+                {
+                    const int outputPair = outputs[c].index;
+
+                    addToggle (routing.isRouted (source, outputPair),
+                               { firstOutputX + (int) c * columnWidth, y, columnWidth, rowHeight },
+                               [this, source, outputPair] (bool isOn)
+                               {
+                                   auto updated = owner.getEngine().getEffectiveRouting();
+                                   updated.setRouted (source, outputPair, isOn);
+                                   owner.getEngine().setRouting (updated);
+                               });
+                }
+            }
+
+            if (outputs.empty())
+                addLabel ("No output channels are enabled on the Audio page.",
+                          { firstOutputX, 0, 360, headerHeight }, juce::Justification::centredLeft);
+
+            grid.setSize (firstOutputX + juce::jmax (360, (int) outputs.size() * columnWidth),
+                          headerHeight + (int) rows.size() * rowHeight);
+            grid.repaint();
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds().reduced (12);
+            hint.setBounds (area.removeFromTop (40));
+            area.removeFromTop (4);
+            viewport.setBounds (area);
+        }
+
+    private:
+        void changeListenerCallback (juce::ChangeBroadcaster*) override
+        {
+            refresh();
+        }
+
+        IconMenu& owner;
+        juce::Label hint;
+
+        // 宣告順序：grid 要比 viewport 與格子裡的元件都晚毀
+        juce::Component grid;
+        juce::Viewport viewport;
+        juce::OwnedArray<juce::Label> labels;
+        juce::OwnedArray<juce::ToggleButton> toggles;
+    };
+
     class AecSettingsTab : public juce::Component
     {
     public:
@@ -49,8 +202,60 @@ namespace
             addAndMakeVisible (aecToggle);
 
             nrToggle.setButtonText ("Noise Reduction");
-            nrToggle.onClick = [this] { applyNrToggle(); };
+            nrToggle.onClick = [this] { owner.getEngine().setNoiseReductionEnabled (nrToggle.getToggleState()); };
             addAndMakeVisible (nrToggle);
+
+            nrAlgorithmLabel.setText ("Algorithm", juce::dontSendNotification);
+            nrAlgorithmLabel.setJustificationType (juce::Justification::centredLeft);
+            addAndMakeVisible (nrAlgorithmLabel);
+
+            const auto& choices = getNoiseReducerChoices();
+            for (int i = 0; i < (int) choices.size(); ++i)
+                nrAlgorithmCombo.addItem (choices[(size_t) i].displayName, i + 1);
+
+            nrAlgorithmCombo.onChange = [this]
+            {
+                if (ignoreCallbacks || nrAlgorithmCombo.getSelectedId() <= 0)
+                    return;
+
+                owner.getEngine().setNoiseReducerAlgorithm (getNoiseReducerChoices()[(size_t) nrAlgorithmCombo.getSelectedId() - 1].id);
+                refreshFromOwner();
+            };
+            addAndMakeVisible (nrAlgorithmCombo);
+
+            compareButton.setButtonText ("Compare...");
+            compareButton.onClick = [this] { openCompareWindow(); };
+            addAndMakeVisible (compareButton);
+
+            nrMaxLabel.setText ("Max Reduction", juce::dontSendNotification);
+            nrMaxLabel.setJustificationType (juce::Justification::centredLeft);
+            addAndMakeVisible (nrMaxLabel);
+
+            // 最右邊代表不限制；唱歌時調低可以減少長音被削掉
+            nrMaxSlider.setRange (6.0, nrMaxUnlimitedPosition, 1.0);
+            nrMaxSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+            nrMaxSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 80, 24);
+            nrMaxSlider.textFromValueFunction = [] (double v)
+            {
+                return v >= nrMaxUnlimitedPosition ? juce::String ("Unlimited") : juce::String ((int) v) + " dB";
+            };
+            nrMaxSlider.valueFromTextFunction = [] (const juce::String& text)
+            {
+                return text.containsIgnoreCase ("unlim") ? nrMaxUnlimitedPosition : text.getDoubleValue();
+            };
+            nrMaxSlider.onValueChange = [this]
+            {
+                if (ignoreCallbacks)
+                    return;
+
+                const double v = nrMaxSlider.getValue();
+                owner.getEngine().setNoiseReductionMaxAttenuation (v >= nrMaxUnlimitedPosition ? 100.0f : (float) v);
+            };
+            addAndMakeVisible (nrMaxSlider);
+
+            nrErrorLabel.setColour (juce::Label::textColourId, juce::Colours::orangered);
+            nrErrorLabel.setFont (juce::FontOptions { 12.0f });
+            addAndMakeVisible (nrErrorLabel);
 
             strengthLabel.setText ("AEC Strength", juce::dontSendNotification);
             strengthLabel.setJustificationType (juce::Justification::centredLeft);
@@ -115,6 +320,18 @@ namespace
 
             aecToggle.setToggleState (getSettings().isAecEnabled(), juce::dontSendNotification);
             nrToggle.setToggleState (getSettings().isNrEnabled(), juce::dontSendNotification);
+
+            const auto& choices = getNoiseReducerChoices();
+            for (int i = 0; i < (int) choices.size(); ++i)
+                if (getSettings().getNrAlgorithm() == choices[(size_t) i].id)
+                    nrAlgorithmCombo.setSelectedId (i + 1, juce::dontSendNotification);
+
+            const float maxDb = getSettings().getNrMaxAttenuationDb();
+            nrMaxSlider.setValue (maxDb >= 100.0f ? nrMaxUnlimitedPosition : maxDb, juce::dontSendNotification);
+
+            const auto error = owner.getEngine().getNoiseReducerError();
+            nrErrorLabel.setText (error.isEmpty() ? juce::String() : "Could not load the model, using Simple: " + error,
+                                  juce::dontSendNotification);
             strengthSlider.setValue (getSettings().getAecStrengthPercent(), juce::dontSendNotification);
             gainSlider.setValue (getSettings().getReferenceGainDb(), juce::dontSendNotification);
 
@@ -140,6 +357,19 @@ namespace
 
             placeRow (aecToggle);
             placeRow (nrToggle);
+
+            auto algorithmRow = area.removeFromTop (rowHeight);
+            nrAlgorithmLabel.setBounds (algorithmRow.removeFromLeft (140));
+            compareButton.setBounds (algorithmRow.removeFromRight (100));
+            algorithmRow.removeFromRight (6);
+            nrAlgorithmCombo.setBounds (algorithmRow);
+            area.removeFromTop (gap);
+
+            auto maxRow = area.removeFromTop (rowHeight);
+            nrMaxLabel.setBounds (maxRow.removeFromLeft (140));
+            nrMaxSlider.setBounds (maxRow);
+            nrErrorLabel.setBounds (area.removeFromTop (20));
+            area.removeFromTop (gap);
 
             auto strengthRow = area.removeFromTop (rowHeight);
             strengthLabel.setBounds (strengthRow.removeFromLeft (140));
@@ -243,10 +473,16 @@ namespace
             refreshFromOwner();
         }
 
-        void applyNrToggle()
+        void openCompareWindow()
         {
-            getSettings().setNrEnabled (nrToggle.getToggleState());
-            owner.getEngine().rebuildGraph();
+            if (compareWindow != nullptr)
+            {
+                compareWindow->toFront (true);
+                return;
+            }
+
+            compareWindow = std::make_unique<NoiseCompareWindow> (owner.getEngine(), getSettings().getNrAlgorithm());
+            compareWindow->onClose = [this] { compareWindow = nullptr; };
         }
 
         void updateControlStates()
@@ -263,8 +499,15 @@ namespace
             monitorButton.setEnabled (aecOn);
         }
 
+        static constexpr double nrMaxUnlimitedPosition = 61.0;
+
         IconMenu& owner;
         juce::ToggleButton aecToggle, nrToggle;
+        juce::Label nrAlgorithmLabel, nrMaxLabel, nrErrorLabel;
+        juce::ComboBox nrAlgorithmCombo;
+        juce::Slider nrMaxSlider;
+        juce::TextButton compareButton;
+        std::unique_ptr<NoiseCompareWindow> compareWindow;
         juce::Label strengthLabel, gainLabel;
        #if JUCE_WINDOWS
         juce::Label referenceLabel;
@@ -337,6 +580,22 @@ namespace
             addButton.onClick = [this] { showAddPluginMenu(); };
             addAndMakeVisible (addButton);
 
+            mixLabel.setText ("Mix (dry / wet)", juce::dontSendNotification);
+            addAndMakeVisible (mixLabel);
+
+            mixSlider.setRange (0.0, 100.0, 1.0);
+            mixSlider.setTextValueSuffix (" %");
+            mixSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+            mixSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 24);
+            mixSlider.onValueChange = [this]
+            {
+                const int row = listBox.getSelectedRow();
+
+                if (juce::isPositiveAndBelow (row, static_cast<int> (plugins.size())))
+                    owner.getEngine().setPluginMix (row, static_cast<float> (mixSlider.getValue()));
+            };
+            addAndMakeVisible (mixSlider);
+
             refreshList();
         }
 
@@ -356,6 +615,11 @@ namespace
         {
             auto area = getLocalBounds().reduced (12);
             auto buttonRow = area.removeFromBottom (32);
+            area.removeFromBottom (8);
+
+            auto mixRow = area.removeFromBottom (28);
+            mixLabel.setBounds (mixRow.removeFromLeft (120));
+            mixSlider.setBounds (mixRow);
             area.removeFromBottom (8);
 
             const int buttonWidth = juce::jmax (72, buttonRow.getWidth() / 6);
@@ -425,6 +689,10 @@ namespace
             deleteButton.setEnabled (hasSelection);
             moveUpButton.setEnabled (hasSelection && row > 0);
             moveDownButton.setEnabled (hasSelection && row < static_cast<int> (plugins.size()) - 1);
+
+            mixLabel.setEnabled (hasSelection);
+            mixSlider.setEnabled (hasSelection);
+            mixSlider.setValue (hasSelection ? owner.getEngine().getPluginMix (row) : 100.0, juce::dontSendNotification);
         }
 
         void showAddPluginMenu()
@@ -452,6 +720,8 @@ namespace
         std::vector<juce::PluginDescription> plugins;
         juce::ListBox listBox;
         juce::TextButton editButton, bypassButton, moveUpButton, moveDownButton, deleteButton, addButton;
+        juce::Label mixLabel;
+        juce::Slider mixSlider;
     };
 
     class UpdatesSettingsTab : public juce::Component,
@@ -554,11 +824,13 @@ public:
         : owner (ownerIn),
           tabs (juce::TabbedButtonBar::TabsAtTop),
           audioTab (ownerIn),
+          routingTab (ownerIn),
           aecTab (ownerIn),
           pluginTab (ownerIn),
           updatesTab (ownerIn.getUpdater())
     {
         tabs.addTab ("Audio", juce::Colours::transparentBlack, &audioTab, false);
+        tabs.addTab ("Routing", juce::Colours::transparentBlack, &routingTab, false);
         tabs.addTab ("AEC", juce::Colours::transparentBlack, &aecTab, false);
         tabs.addTab ("Plugins", juce::Colours::transparentBlack, &pluginTab, false);
         tabs.addTab ("Updates", juce::Colours::transparentBlack, &updatesTab, false);
@@ -583,14 +855,17 @@ private:
         const int index = tabs.getCurrentTabIndex();
 
         if (index == 1)
-            aecTab.refreshFromOwner();
+            routingTab.refresh();
         else if (index == 2)
+            aecTab.refreshFromOwner();
+        else if (index == 3)
             pluginTab.refreshList();
     }
 
     IconMenu& owner;
     juce::TabbedComponent tabs;
     AudioSettingsTab audioTab;
+    RoutingSettingsTab routingTab;
     AecSettingsTab aecTab;
     PluginSettingsTab pluginTab;
     UpdatesSettingsTab updatesTab;
@@ -606,8 +881,8 @@ SettingsWindow::SettingsWindow (IconMenu& owner_)
     setContentOwned (panel, true);
     setUsingNativeTitleBar (true);
     setResizable (true, true);
-    setResizeLimits (480, 420, 900, 900);
-    setSize (560, 520);
+    setResizeLimits (480, 500, 900, 900);
+    setSize (560, 600);
     centreWithSize (getWidth(), getHeight());
 
     restoreWindowStateFromString (getSettings().getWindowState (AppSettings::Window::settings));

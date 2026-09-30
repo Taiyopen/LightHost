@@ -148,6 +148,8 @@ std::unique_ptr<AecProcessor::Engine> AecProcessor::createEngine() const
     e->micMono.assign (static_cast<size_t> (blockSize), 0.0f);
     e->capHostPending.reserve (static_cast<size_t> (hostFrameSize + blockSize * 2));
     e->capOutPending.reserve (static_cast<size_t> (hostFrameSize * 2 + blockSize * 2));
+    // 輸出先墊一格靜音：AEC 一次處理一格，主機區塊不是一格的倍數時，才不會有區塊拿不到處理好的聲音
+    e->capOutPending.assign (static_cast<size_t> (hostFrameSize), 0.0f);
     e->refHostFrameScratch.assign (static_cast<size_t> (hostFrameSize), 0.0f);
     e->capFrameScratch.assign (static_cast<size_t> (frameSize), 0.0f);
     e->channelPtrScratch.assign (1, nullptr);
@@ -182,6 +184,31 @@ void AecProcessor::installEngine (std::unique_ptr<Engine> newEngine)
     // newEngine 現在是舊引擎，在鎖外釋放，不拖住音訊執行緒
 }
 
+int AecProcessor::measureEngineLatency()
+{
+    // 輸出墊的一格＋AEC3 內部（分頻、區塊化、轉取樣率）的延遲。後者依取樣率不同且介面不提供，
+    // 所以拿一組新引擎送一個脈衝進去，看它從哪裡出來。喇叭參考為靜音，AEC 不會動到這個脈衝
+    auto probe = createEngine();
+    constexpr int numFrames = 60;
+    const int impulseAt = hostFrameSize * 30 + hostFrameSize / 3;
+
+    std::vector<float> mic ((size_t) (hostFrameSize * numFrames), 0.0f);
+    std::vector<float> silence ((size_t) hostFrameSize, 0.0f);
+    mic[(size_t) impulseAt] = 0.5f;
+
+    for (int f = 0; f < numFrames; ++f)
+        processAlignedFramePair (*probe, silence.data(), mic.data() + f * hostFrameSize);
+
+    const auto& out = probe->capOutPending;   // 開頭是墊的那一格，接著是每一格的輸出
+    int peak = 0;
+
+    for (int i = 1; i < (int) out.size(); ++i)
+        if (std::abs (out[(size_t) i]) > std::abs (out[(size_t) peak]))
+            peak = i;
+
+    return juce::jmax (hostFrameSize, peak - impulseAt);
+}
+
 void AecProcessor::prepareToPlay (double newSampleRate, int samplesPerBlock)
 {
     prepared.store (false);
@@ -200,6 +227,10 @@ void AecProcessor::prepareToPlay (double newSampleRate, int samplesPerBlock)
     resampling = hostRate != processingSampleRate;
     frameSize = processingSampleRate / 100;
     hostFrameSize = resampling ? hostFrameSizeFor (hostRate, processingSampleRate, frameSize) : frameSize;
+
+    resetReferenceReader (0);  // 目標差距依 hostFrameSize 計算，要放在它之後
+    setLatencySamples (measureEngineLatency());  // 讓處理圖與總延遲顯示知道
+    referenceDriftPpm.store (0.0f);
 
     installEngine (createEngine());
     prepared.store (true);
@@ -260,26 +291,25 @@ int AecProcessor::getReferenceLeadSamples() const
     return (writeIndex - readIndex + referenceRingSize) % referenceRingSize;
 }
 
-int AecProcessor::getMaxAllowedReferenceLeadSamples() const
+int AecProcessor::getReferenceSlackSamples() const
 {
-    const int slack = juce::jmax (hostFrameSize * 2, blockSize);
-    return juce::jmin (referenceRingSize / 2, referenceDelaySamples + slack);
+    return juce::jmax (hostFrameSize * 2, blockSize);
 }
 
-void AecProcessor::resyncReferenceReadPointer()
+int AecProcessor::getMaxAllowedReferenceLeadSamples() const
 {
-    const int writeIndex = referenceWritePos.load (std::memory_order_acquire);
-    int readIndex = referenceReadPos.load (std::memory_order_relaxed);
-    const int lead = (writeIndex - readIndex + referenceRingSize) % referenceRingSize;
+    // 讀取端正常追蹤時落在 target 附近；超過這個值代表讀取端停住了，由寫入端強制拉回
+    return juce::jmin (referenceRingSize / 2, referenceDelaySamples + 2 * getReferenceSlackSamples());
+}
 
-    const int targetLead = referenceDelaySamples;
-    const int maxAllowedLead = getMaxAllowedReferenceLeadSamples();
-
-    if (lead < targetLead || lead > maxAllowedLead)
-    {
-        readIndex = (writeIndex - targetLead + referenceRingSize) % referenceRingSize;
-        referenceReadPos.store (readIndex, std::memory_order_release);
-    }
+void AecProcessor::resetReferenceReader (int writeIndex)
+{
+    const int target = referenceDelaySamples + getReferenceSlackSamples() / 2;
+    referenceReadPosition = (double) ((writeIndex - target + referenceRingSize) % referenceRingSize);
+    smoothedReferenceLead = (double) target;
+    referenceDriftIntegral = 0.0;
+    lastStoredReadPos = (int) referenceReadPosition;
+    referenceReadPos.store (lastStoredReadPos, std::memory_order_release);
 }
 
 bool AecProcessor::readReferenceFrame (float* dest, int numSamples)
@@ -287,28 +317,69 @@ bool AecProcessor::readReferenceFrame (float* dest, int numSamples)
     if (dest == nullptr || numSamples <= 0)
         return false;
 
-    resyncReferenceReadPointer();
-
     const int writeIndex = referenceWritePos.load (std::memory_order_acquire);
-    int readIndex = referenceReadPos.load (std::memory_order_relaxed);
-    const int lead = (writeIndex - readIndex + referenceRingSize) % referenceRingSize;
 
-    if (lead <= referenceDelaySamples)
+    // 寫入端為了避免溢位而改過讀取位置時，以它為準
+    if (referenceReadPos.load (std::memory_order_acquire) != lastStoredReadPos)
+        referenceReadPosition = (double) referenceReadPos.load (std::memory_order_acquire);
+
+    auto leadOf = [writeIndex] (double readPosition)
+    {
+        double lead = (double) writeIndex - readPosition;
+        return lead < 0.0 ? lead + referenceRingSize : lead;
+    };
+
+    double lead = leadOf (referenceReadPosition);
+    const int slack = getReferenceSlackSamples();
+
+    // 資料不夠讀一整格（喇叭參考斷了）或多到超出範圍：硬性重新對齊，其餘時間只做微調
+    if (lead < (double) (numSamples + 4) || lead > (double) getMaxAllowedReferenceLeadSamples())
     {
         referenceUnderruns.fetch_add (1, std::memory_order_relaxed);
-        std::fill (dest, dest + numSamples, 0.0f);
-        return false;
+        resetReferenceReader (writeIndex);
+        lead = leadOf (referenceReadPosition);
+
+        if (lead < (double) (numSamples + 4))
+        {
+            std::fill (dest, dest + numSamples, 0.0f);
+            return false;
+        }
     }
 
-    lastReferenceLeadForAec = lead;
+    // 時脈追蹤：喇叭與麥克風各用各的時脈，慢慢錯開。平滑後的差距（約 1 秒）偏離目標多少，
+    // 就把參考訊號的播放速度微調多少，最多 ±2000 ppm，遠低於聽得出來的程度
+    // 比例項負責反應，積分項把長期固定的時脈差吃掉，讓差距回到正中間
+    const double target = (double) (referenceDelaySamples + slack / 2);
+    smoothedReferenceLead += 0.01 * (lead - smoothedReferenceLead);
+    const double error = smoothedReferenceLead - target;
+    referenceDriftIntegral = juce::jlimit (-0.002, 0.002, referenceDriftIntegral + error * 2.0e-9);
+    const double correction = juce::jlimit (-0.002, 0.002, error * 2.0e-6 + referenceDriftIntegral);
+    const double step = 1.0 + correction;
+    referenceDriftPpm.store ((float) (correction * 1.0e6), std::memory_order_relaxed);
+
+    lastReferenceLeadForAec = juce::roundToInt (smoothedReferenceLead);
+
+    // 四點三次內插（Catmull-Rom），讀取位置可以落在樣本之間
+    auto sampleAt = [this] (int index)
+    {
+        return referenceRing[(size_t) ((index % referenceRingSize + referenceRingSize) % referenceRingSize)];
+    };
+
+    double position = referenceReadPosition;
 
     for (int i = 0; i < numSamples; ++i)
     {
-        dest[i] = referenceRing[static_cast<size_t> (readIndex)];
-        readIndex = (readIndex + 1) % referenceRingSize;
+        const int base = (int) std::floor (position);
+        const float t = (float) (position - base);
+        const float y0 = sampleAt (base - 1), y1 = sampleAt (base), y2 = sampleAt (base + 1), y3 = sampleAt (base + 2);
+
+        dest[i] = y1 + 0.5f * t * (y2 - y0 + t * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + t * (3.0f * (y1 - y2) + y3 - y0)));
+        position += step;
     }
 
-    referenceReadPos.store (readIndex, std::memory_order_release);
+    referenceReadPosition = std::fmod (position, (double) referenceRingSize);
+    lastStoredReadPos = (int) referenceReadPosition;
+    referenceReadPos.store (lastStoredReadPos, std::memory_order_release);
     return true;
 }
 
@@ -329,12 +400,14 @@ void AecProcessor::pushReference (const float* samples, int numSamples)
 
     referenceWritePos.store (writeIndex, std::memory_order_release);
 
+    // 讀取端停住時（例如 AEC 還沒開始處理），避免寫入端追過讀取端
     const int readIndex = referenceReadPos.load (std::memory_order_acquire);
     const int lead = (writeIndex - readIndex + referenceRingSize) % referenceRingSize;
 
     if (lead > getMaxAllowedReferenceLeadSamples())
     {
-        referenceReadPos.store ((writeIndex - referenceDelaySamples + referenceRingSize) % referenceRingSize,
+        const int target = referenceDelaySamples + getReferenceSlackSamples() / 2;
+        referenceReadPos.store ((writeIndex - target + referenceRingSize) % referenceRingSize,
                                 std::memory_order_release);
     }
 }
@@ -461,6 +534,7 @@ AecProcessorStats AecProcessor::getStats() const
     stats.referenceSamplesReceived = referenceSamplesReceived.load (std::memory_order_relaxed);
     stats.samplesProcessed = samplesProcessed.load (std::memory_order_relaxed);
     stats.referenceUnderruns = referenceUnderruns.load (std::memory_order_relaxed);
+    stats.referenceDriftPpm = referenceDriftPpm.load (std::memory_order_relaxed);
     return stats;
 }
 
@@ -501,7 +575,7 @@ void AecProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                                 e.capHostPending.begin() + hostFrameSize);
     }
 
-    // 先用已處理好的樣本，不夠的部分補原音；最後一次移掉用過的，不再逐樣本從頭刪除
+    // 輸出一律取處理好的樣本（墊了一格，正常不會不夠）；萬一不夠才補原音。最後一次移掉用過的
     const int available = juce::jmin (numSamples, static_cast<int> (e.capOutPending.size()));
 
     for (int i = 0; i < numSamples; ++i)

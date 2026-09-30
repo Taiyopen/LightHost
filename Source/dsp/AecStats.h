@@ -24,6 +24,7 @@ struct AecMonitorSnapshot
     juce::int64 referenceSamplesReceived = 0;
     juce::int64 samplesProcessed = 0;
     juce::int64 referenceUnderruns = 0;
+    float referenceDriftPpm = 0.0f;
 };
 
 /** AecProcessor 內部累積的執行緒安全統計 */
@@ -41,6 +42,7 @@ struct AecProcessorStats
     juce::int64 referenceSamplesReceived = 0;
     juce::int64 samplesProcessed = 0;
     juce::int64 referenceUnderruns = 0;
+    float referenceDriftPpm = 0.0f;   // 目前為了追時脈把參考訊號加快（正）或放慢（負）多少
 };
 
 inline float dbToMeterProportion (float db, float floorDb = -60.0f, float ceilingDb = 0.0f)

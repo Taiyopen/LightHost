@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <optional>
+#include "audio/Routing.h"
 
 /**
  * 設定檔唯一的讀寫入口。所有設定鍵名與預設值都只寫在 AppSettings.cpp，
@@ -19,6 +21,12 @@ public:
     void setAecEnabled (bool enabled);
     bool isNrEnabled() const;
     void setNrEnabled (bool enabled);
+    /** 降噪演算法 id，見 getNoiseReducerChoices() */
+    juce::String getNrAlgorithm() const;
+    void setNrAlgorithm (const juce::String& id);
+    /** 背景噪音最多壓低幾 dB；>= 100 代表不限制 */
+    float getNrMaxAttenuationDb() const;
+    void setNrMaxAttenuationDb (float db);
     bool useSystemLoopbackReference() const;
     void setUseSystemLoopbackReference (bool use);
     juce::String getReferenceDeviceId() const;
@@ -27,6 +35,10 @@ public:
     void setReferenceGainDb (float gainDb);
     float getAecStrengthPercent() const;
     void setAecStrengthPercent (float strengthPercent);
+
+    /** 沒設定過時回傳空值，由 AudioEngine 依目前裝置決定預設 */
+    std::optional<Routing> getRouting() const;
+    void setRouting (const Routing& routing);
 
     // 自動檢查更新
     bool isAutoUpdateCheckEnabled() const;
@@ -54,10 +66,13 @@ public:
     void setPluginOrder (const juce::PluginDescription& plugin, int order);
     bool isPluginBypassed (const juce::PluginDescription& plugin) const;
     void setPluginBypassed (const juce::PluginDescription& plugin, bool bypassed);
+    /** 乾濕比 0–100 %，預設 100（只有外掛輸出） */
+    float getPluginMix (const juce::PluginDescription& plugin) const;
+    void setPluginMix (const juce::PluginDescription& plugin, float percent);
     juce::String getPluginState (const juce::PluginDescription& plugin) const;
     void setPluginState (const juce::PluginDescription& plugin, const juce::String& base64State);
     void removePluginState (const juce::PluginDescription& plugin);
-    /** 移除外掛時一併清掉它的排序、略過與狀態 */
+    /** 移除外掛時一併清掉它的排序、略過、乾濕比與狀態 */
     void removePluginEntries (const juce::PluginDescription& plugin);
 
     /** 同一個外掛（名稱＋版本＋格式）的識別字串，也用來當錯誤訊息表的鍵 */

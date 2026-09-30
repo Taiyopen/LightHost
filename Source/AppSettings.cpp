@@ -7,12 +7,15 @@ namespace
     {
         constexpr auto aecEnabled           = "aecEnabled";
         constexpr auto nrEnabled            = "nrEnabled";
+        constexpr auto nrAlgorithm          = "nrAlgorithm";
+        constexpr auto nrMaxAttenuationDb   = "nrMaxAttenuationDb";
         constexpr auto useSystemLoopback    = "aecUseSystemLoopback";
         constexpr auto referenceDeviceId    = "aecReferenceDeviceId";
         constexpr auto referenceGainDb      = "aecReferenceGainDb";
         constexpr auto aecStrengthPercent   = "aecStrengthPercent";
         constexpr auto icon                 = "icon";
         constexpr auto autoUpdateCheck      = "autoCheckUpdates";
+        constexpr auto routing              = "routing";
         constexpr auto audioDeviceState     = "audioDeviceState";
         constexpr auto knownPluginList      = "pluginList";
         constexpr auto activePluginList     = "pluginListActive";
@@ -59,6 +62,10 @@ bool AppSettings::isAecEnabled() const                  { return getFile().getBo
 void AppSettings::setAecEnabled (bool enabled)          { getFile().setValue (Keys::aecEnabled, enabled); save(); }
 bool AppSettings::isNrEnabled() const                   { return getFile().getBoolValue (Keys::nrEnabled, true); }
 void AppSettings::setNrEnabled (bool enabled)           { getFile().setValue (Keys::nrEnabled, enabled); save(); }
+juce::String AppSettings::getNrAlgorithm() const         { return getFile().getValue (Keys::nrAlgorithm, "rnnoise"); }
+void AppSettings::setNrAlgorithm (const juce::String& id) { getFile().setValue (Keys::nrAlgorithm, id); save(); }
+float AppSettings::getNrMaxAttenuationDb() const        { return (float) getFile().getDoubleValue (Keys::nrMaxAttenuationDb, 30.0); }
+void AppSettings::setNrMaxAttenuationDb (float db)      { getFile().setValue (Keys::nrMaxAttenuationDb, db); save(); }
 bool AppSettings::useSystemLoopbackReference() const    { return getFile().getBoolValue (Keys::useSystemLoopback, false); }
 void AppSettings::setUseSystemLoopbackReference (bool use) { getFile().setValue (Keys::useSystemLoopback, use); save(); }
 
@@ -92,6 +99,20 @@ float AppSettings::getAecStrengthPercent() const
 void AppSettings::setAecStrengthPercent (float strengthPercent)
 {
     getFile().setValue (Keys::aecStrengthPercent, strengthPercent);
+    save();
+}
+
+std::optional<Routing> AppSettings::getRouting() const
+{
+    if (! getFile().containsKey (Keys::routing))
+        return std::nullopt;
+
+    return Routing::fromString (getFile().getValue (Keys::routing));
+}
+
+void AppSettings::setRouting (const Routing& routing)
+{
+    getFile().setValue (Keys::routing, routing.toString());
     save();
 }
 
@@ -194,6 +215,17 @@ void AppSettings::setPluginBypassed (const juce::PluginDescription& plugin, bool
     save();
 }
 
+float AppSettings::getPluginMix (const juce::PluginDescription& plugin) const
+{
+    return (float) getFile().getDoubleValue (pluginKey ("mix", plugin), 100.0);
+}
+
+void AppSettings::setPluginMix (const juce::PluginDescription& plugin, float percent)
+{
+    getFile().setValue (pluginKey ("mix", plugin), percent);
+    save();
+}
+
 juce::String AppSettings::getPluginState (const juce::PluginDescription& plugin) const
 {
     return getFile().getValue (pluginKey ("state", plugin));
@@ -215,6 +247,7 @@ void AppSettings::removePluginEntries (const juce::PluginDescription& plugin)
 {
     getFile().removeValue (pluginKey ("order", plugin));
     getFile().removeValue (pluginKey ("bypass", plugin));
+    getFile().removeValue (pluginKey ("mix", plugin));
     getFile().removeValue (pluginKey ("state", plugin));
     save();
 }
