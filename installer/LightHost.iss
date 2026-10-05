@@ -1,5 +1,5 @@
 #define MyAppName "Light Host"
-#define MyAppVersion "1.6.0"
+#define MyAppVersion "1.7.0"
 #define MyAppPublisher "LightHost"
 #define MyAppExeName "Light Host.exe"
 
