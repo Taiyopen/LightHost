@@ -1,5 +1,5 @@
 #define MyAppName "Light Host"
-#define MyAppVersion "1.7.0"
+#define MyAppVersion "1.8.0"
 #define MyAppPublisher "LightHost"
 #define MyAppExeName "Light Host.exe"
 
@@ -67,3 +67,11 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 ; App 內自動更新是用 /SILENT 執行，裝完要自己重新開啟（postinstall 預設以原本的使用者身分執行，不會帶系統管理員權限）
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait postinstall skipifnotsilent
+
+[Code]
+// 「Start with Windows」是 App 自己寫進登錄檔的，解除安裝時一併清掉
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Light Host');
+end;
