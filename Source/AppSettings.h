@@ -64,6 +64,10 @@ public:
     bool isAutoUpdateCheckEnabled() const;
     void setAutoUpdateCheckEnabled (bool enabled);
 
+    // 開機自動啟動：存在 Windows 登錄檔的 Run，不在設定檔；在工作管理員停用也算關
+    bool isStartWithWindowsEnabled() const;
+    void setStartWithWindowsEnabled (bool enabled);
+
     // 系統列圖示顏色："white" 或 "black"
     juce::String getIconColour() const;
     void setIconColour (const juce::String& colour);

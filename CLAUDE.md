@@ -29,7 +29,7 @@ Light Host：Windows 系統列常駐的 VST3 外掛宿主，麥克風經「回�
 | `Source/dsp/DryWetMixer.h` | 每個外掛後面的乾濕比混音（乾聲由處理圖自動延遲對齊） |
 | `third_party/{rnnoise,onnxruntime,deepfilternet,fastenhancer,gtcrn}` | 降噪用的程式庫、DLL 與模型；來源與重建方式見各自 README |
 | `tests/NoiseBench.cpp`、`tests/AecDriftTest.cpp`、`tests/ClockBridgeTest.cpp` | 離線檢查：降噪效果／CPU、AEC 時脈追蹤、裝置間時脈橋接（`ClockBridgeTest --list` 列出 Windows 音訊端點） |
-| `Source/ui/SettingsWindow.*` | 設定視窗：Audio / Routing / AEC / Plugins / Updates 分頁 |
+| `Source/ui/SettingsWindow.*` | 設定視窗：Audio / Routing / AEC / Plugins / General（開機啟動、更新）分頁 |
 | `Source/ui/AecMonitorWindow.*` | AEC 即時監控 |
 | `third_party/webrtc-aec3` | AEC3（有本地修改過的 `CMakeLists.txt`） |
 | `third_party/ASIOSDK` | 授權不能散佈，不進版控；有放才會開 ASIO |

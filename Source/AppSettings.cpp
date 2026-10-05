@@ -27,6 +27,10 @@ namespace
         constexpr auto aecMonitorWindowPos  = "aecMonitorWindowPos";
     }
 
+    // 開機自動啟動的登錄檔位置（最後一段是值的名稱）；StartupApproved 是工作管理員「停用」寫的地方
+    constexpr auto startupRunValue      = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Light Host";
+    constexpr auto startupApprovedValue = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run\\Light Host";
+
     juce::String pluginKey (const char* type, const juce::PluginDescription& plugin)
     {
         return juce::String ("plugin-") + type + "-" + AppSettings::getPluginId (plugin);
@@ -172,6 +176,39 @@ void AppSettings::setAutoUpdateCheckEnabled (bool enabled)
 {
     getFile().setValue (Keys::autoUpdateCheck, enabled);
     save();
+}
+
+bool AppSettings::isStartWithWindowsEnabled() const
+{
+   #if JUCE_WINDOWS
+    if (! juce::WindowsRegistry::valueExists (startupRunValue))
+        return false;
+
+    // 工作管理員停用時，第一個位元組是奇數（0x03）
+    juce::MemoryBlock approved;
+    juce::WindowsRegistry::getBinaryValue (startupApprovedValue, approved);
+    return approved.isEmpty() || (approved[0] & 1) == 0;
+   #else
+    return false;
+   #endif
+}
+
+void AppSettings::setStartWithWindowsEnabled (bool enabled)
+{
+   #if JUCE_WINDOWS
+    if (enabled)
+    {
+        const auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getFullPathName();
+        juce::WindowsRegistry::setValue (startupRunValue, exe.quoted());
+        juce::WindowsRegistry::deleteValue (startupApprovedValue);   // 解除工作管理員的停用
+    }
+    else
+    {
+        juce::WindowsRegistry::deleteValue (startupRunValue);
+    }
+   #else
+    juce::ignoreUnused (enabled);
+   #endif
 }
 
 juce::String AppSettings::getIconColour() const

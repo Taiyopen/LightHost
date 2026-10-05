@@ -901,13 +901,22 @@ namespace
         juce::Slider mixSlider;
     };
 
-    class UpdatesSettingsTab : public juce::Component,
+    class GeneralSettingsTab : public juce::Component,
                                private juce::ChangeListener
     {
     public:
-        explicit UpdatesSettingsTab (Updater& updaterIn)
+        explicit GeneralSettingsTab (Updater& updaterIn)
             : updater (updaterIn)
         {
+            startupToggle.setButtonText ("Start with Windows");
+            startupToggle.onClick = [this]
+            {
+                getSettings().setStartWithWindowsEnabled (startupToggle.getToggleState());
+                refreshStartup();
+            };
+            addAndMakeVisible (startupToggle);
+            refreshStartup();
+
             autoCheckToggle.setButtonText ("Check for updates automatically");
             autoCheckToggle.setToggleState (getSettings().isAutoUpdateCheckEnabled(), juce::dontSendNotification);
             autoCheckToggle.onClick = [this]
@@ -934,9 +943,15 @@ namespace
             refresh();
         }
 
-        ~UpdatesSettingsTab() override
+        ~GeneralSettingsTab() override
         {
             updater.removeChangeListener (this);
+        }
+
+        /** 可能在工作管理員改過，切到這頁時重讀 */
+        void refreshStartup()
+        {
+            startupToggle.setToggleState (getSettings().isStartWithWindowsEnabled(), juce::dontSendNotification);
         }
 
         void resized() override
@@ -945,6 +960,8 @@ namespace
             const int rowHeight = 28;
             const int gap = 8;
 
+            startupToggle.setBounds (area.removeFromTop (rowHeight));
+            area.removeFromTop (gap);
             autoCheckToggle.setBounds (area.removeFromTop (rowHeight));
             area.removeFromTop (gap);
             versionLabel.setBounds (area.removeFromTop (rowHeight));
@@ -987,7 +1004,7 @@ namespace
         }
 
         Updater& updater;
-        juce::ToggleButton autoCheckToggle;
+        juce::ToggleButton startupToggle, autoCheckToggle;
         juce::Label versionLabel, statusLabel;
         juce::TextButton checkButton, installButton;
     };
@@ -1004,13 +1021,13 @@ public:
           routingTab (ownerIn),
           aecTab (ownerIn),
           pluginTab (ownerIn),
-          updatesTab (ownerIn.getUpdater())
+          generalTab (ownerIn.getUpdater())
     {
         tabs.addTab ("Audio", juce::Colours::transparentBlack, &audioTab, false);
         tabs.addTab ("Routing", juce::Colours::transparentBlack, &routingTab, false);
         tabs.addTab ("AEC", juce::Colours::transparentBlack, &aecTab, false);
         tabs.addTab ("Plugins", juce::Colours::transparentBlack, &pluginTab, false);
-        tabs.addTab ("Updates", juce::Colours::transparentBlack, &updatesTab, false);
+        tabs.addTab ("General", juce::Colours::transparentBlack, &generalTab, false);
         tabs.setCurrentTabIndex (0);
         tabs.getTabbedButtonBar().addChangeListener (this);
         addAndMakeVisible (tabs);
@@ -1037,6 +1054,8 @@ private:
             aecTab.refreshFromOwner();
         else if (index == 3)
             pluginTab.refreshList();
+        else if (index == 4)
+            generalTab.refreshStartup();
     }
 
     IconMenu& owner;
@@ -1045,7 +1064,7 @@ private:
     RoutingSettingsTab routingTab;
     AecSettingsTab aecTab;
     PluginSettingsTab pluginTab;
-    UpdatesSettingsTab updatesTab;
+    GeneralSettingsTab generalTab;
 };
 
 SettingsWindow::SettingsWindow (IconMenu& owner_)
