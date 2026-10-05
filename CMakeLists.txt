@@ -78,6 +78,8 @@ target_sources(LightHost PRIVATE
     Source/plugins/PluginChain.cpp
     Source/audio/AudioEngine.cpp
     Source/audio/Routing.cpp
+    Source/audio/ClockBridge.cpp
+    Source/audio/ExternalDevice.cpp
     Source/update/Updater.cpp
     Source/dsp/noise/FramedNoiseReducer.cpp
     Source/dsp/noise/ModelNoiseReducers.cpp
@@ -178,3 +180,18 @@ if (MSVC)
     target_compile_options(AecDriftTest PRIVATE /utf-8)
 endif()
 juce_generate_juce_header(AecDriftTest)
+
+# 時脈橋接離線檢查（不隨 App 發布）：cmake --build build-new --config Release --target ClockBridgeTest
+juce_add_console_app(ClockBridgeTest PRODUCT_NAME "ClockBridgeTest")
+set_target_properties(ClockBridgeTest PROPERTIES EXCLUDE_FROM_ALL TRUE)
+target_sources(ClockBridgeTest PRIVATE tests/ClockBridgeTest.cpp Source/audio/ClockBridge.cpp Source/audio/ExternalDevice.cpp)
+target_include_directories(ClockBridgeTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+target_compile_definitions(ClockBridgeTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(ClockBridgeTest PRIVATE juce::juce_audio_basics juce::juce_events)
+if (WIN32)
+    target_link_libraries(ClockBridgeTest PRIVATE ole32 uuid)
+endif()
+if (MSVC)
+    target_compile_options(ClockBridgeTest PRIVATE /utf-8)
+endif()
+juce_generate_juce_header(ClockBridgeTest)

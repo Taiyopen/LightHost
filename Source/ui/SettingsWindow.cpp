@@ -3,13 +3,16 @@
 #include "../AppSettings.h"
 #include "../AppTheme.h"
 #include "../audio/LoopbackDevices.h"
+#include "../audio/ExternalDevice.h"
 #include "../dsp/noise/NoiseReducerFactory.h"
 #include "NoiseCompareWindow.h"
 
 namespace
 {
     class AudioSettingsTab : public juce::Component,
-                             private juce::ChangeListener
+                             private juce::ChangeListener,
+                             private juce::ListBoxModel,
+                             private juce::Timer
     {
     public:
         explicit AudioSettingsTab (IconMenu& owner_)
@@ -18,6 +21,67 @@ namespace
         {
             addAndMakeVisible (audioSettings);
             owner.getEngine().getDeviceManager().addChangeListener (this);
+
+            externalTitle.setText ("Additional devices (Windows audio, shared mode)", juce::dontSendNotification);
+            externalTitle.setFont (juce::FontOptions { 14.0f, juce::Font::bold });
+            addAndMakeVisible (externalTitle);
+
+            externalList.setModel (this);
+            externalList.setRowHeight (22);
+            addAndMakeVisible (externalList);
+
+            addInputButton.setButtonText ("Add Input...");
+            addInputButton.onClick = [this] { showAddMenu (true); };
+            addAndMakeVisible (addInputButton);
+
+            addOutputButton.setButtonText ("Add Output...");
+            addOutputButton.onClick = [this] { showAddMenu (false); };
+            addAndMakeVisible (addOutputButton);
+
+            removeButton.setButtonText ("Remove");
+            removeButton.onClick = [this]
+            {
+                const auto& devices = owner.getEngine().getExternalDevices();
+                const int row = externalList.getSelectedRow();
+
+                if (juce::isPositiveAndBelow (row, (int) devices.size()))
+                    owner.getEngine().removeExternalDevice (devices[(size_t) row]->getUid());
+
+                externalList.updateContent();
+            };
+            addAndMakeVisible (removeButton);
+
+            // 共用模式的取樣率由 Windows 決定，要改得到那裡改
+            soundSettingsButton.setButtonText ("Windows Sound Settings");
+            soundSettingsButton.onClick = [] { openWindowsSoundSettings(); };
+            addAndMakeVisible (soundSettingsButton);
+
+            // 緩衝餘裕用固定選項：每改一次都要重建處理圖，拖拉滑桿會一直斷音
+            marginLabel.setText ("Buffer margin", juce::dontSendNotification);
+            addAndMakeVisible (marginLabel);
+
+            for (int i = 0; i < (int) std::size (marginChoices); ++i)
+                marginCombo.addItem (juce::String (marginChoices[i], 2) + " periods" + (marginChoices[i] == 1.5 ? " (default)" : ""), i + 1);
+
+            for (int i = 0; i < (int) std::size (marginChoices); ++i)
+                if (std::abs (getSettings().getExternalSafetyPeriods() - marginChoices[i]) < 0.01)
+                    marginCombo.setSelectedId (i + 1, juce::dontSendNotification);
+
+            marginCombo.onChange = [this]
+            {
+                const int index = marginCombo.getSelectedId() - 1;
+
+                if (juce::isPositiveAndBelow (index, (int) std::size (marginChoices)))
+                    owner.getEngine().setExternalSafetyPeriods (marginChoices[index]);
+            };
+            addAndMakeVisible (marginCombo);
+
+            lowLatencyToggle.setButtonText ("Low-latency mode (if the driver supports it)");
+            lowLatencyToggle.setToggleState (getSettings().isExternalLowLatency(), juce::dontSendNotification);
+            lowLatencyToggle.onClick = [this] { owner.getEngine().setExternalLowLatency (lowLatencyToggle.getToggleState()); };
+            addAndMakeVisible (lowLatencyToggle);
+
+            startTimer (1000);   // 更新狀態、時脈差與緩衝量
         }
 
         ~AudioSettingsTab() override
@@ -27,7 +91,28 @@ namespace
 
         void resized() override
         {
-            audioSettings.setBounds (getLocalBounds());
+            auto area = getLocalBounds();
+            auto external = area.removeFromBottom (236).reduced (12, 6);
+
+            externalTitle.setBounds (external.removeFromTop (24));
+            auto options = external.removeFromTop (26);
+            marginLabel.setBounds (options.removeFromLeft (100));
+            marginCombo.setBounds (options.removeFromLeft (190));
+            options.removeFromLeft (12);
+            lowLatencyToggle.setBounds (options);
+            external.removeFromTop (6);
+            auto buttons = external.removeFromBottom (28);
+            external.removeFromBottom (6);
+            externalList.setBounds (external);
+
+            for (auto* b : { &addInputButton, &addOutputButton, &removeButton })
+            {
+                b->setBounds (buttons.removeFromLeft (110));
+                buttons.removeFromLeft (6);
+            }
+
+            soundSettingsButton.setBounds (buttons.removeFromRight (180));
+            audioSettings.setBounds (area);
         }
 
     private:
@@ -36,8 +121,100 @@ namespace
             owner.getEngine().saveAudioDeviceStateAndRebuild();
         }
 
+        void timerCallback() override
+        {
+            externalList.updateContent();
+            externalList.repaint();
+        }
+
+        int getNumRows() override
+        {
+            return (int) owner.getEngine().getExternalDevices().size();
+        }
+
+        void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selected) override
+        {
+            const auto& devices = owner.getEngine().getExternalDevices();
+
+            if (! juce::isPositiveAndBelow (row, (int) devices.size()))
+                return;
+
+            if (selected)
+                g.fillAll (juce::Colours::lightblue.withAlpha (0.35f));
+
+            auto& d = *devices[(size_t) row];
+            juce::String text = juce::String (d.isInput() ? "[In]  " : "[Out] ") + d.getName();
+
+            if (d.getState() == ExternalDevice::State::running)
+            {
+                // 緩衝量：輸入存的是裝置的樣本，輸出存的是主裝置的樣本
+                double rate = d.getSampleRate();
+
+                if (! d.isInput())
+                    if (auto* master = owner.getEngine().getDeviceManager().getCurrentAudioDevice())
+                        rate = master->getCurrentSampleRate();
+
+                auto& bridge = d.getBridge();
+                text << "  -  " << d.getSampleRate() << " Hz, " << d.getNumChannels() << " ch, period "
+                     << juce::String (d.getDevicePeriodSeconds() * 1000.0, 1) << " ms"
+                     << (d.isLowLatencyActive() ? " (low latency)" : "") << "  -  Running"
+                     << "  (buffer " << juce::roundToInt (1000.0 * bridge.getBufferedFrames() / juce::jmax (1.0, rate))
+                     << " ms, drift " << juce::String (bridge.getDriftPpm(), 0) << " ppm)";
+            }
+            else
+            {
+                text << "  -  Error: " << d.getError() << " (retrying)";
+            }
+
+            g.setColour (getLookAndFeel().findColour (juce::ListBox::textColourId));
+            g.setFont (juce::FontOptions { 13.0f });
+            g.drawText (text, 6, 0, width - 12, height, juce::Justification::centredLeft, true);
+        }
+
+        void showAddMenu (bool inputs)
+        {
+            const auto endpoints = enumerateWasapiEndpoints (inputs);
+            juce::PopupMenu menu;
+
+            for (int i = 0; i < endpoints.size(); ++i)
+            {
+                const auto& e = endpoints.getReference (i);
+                bool alreadyAdded = false;
+
+                for (auto& d : owner.getEngine().getExternalDevices())
+                    alreadyAdded = alreadyAdded || (d->getEndpointId() == e.id && d->isInput() == inputs);
+
+                const bool supportsLowLatency = e.minLowLatencyPeriodMs > 0.0 && e.minLowLatencyPeriodMs < e.defaultPeriodMs - 0.01;
+                menu.addItem (i + 1, e.name + "  (" + juce::String (e.sampleRate) + " Hz, " + juce::String (e.numChannels) + " ch"
+                                         + (supportsLowLatency ? ", low latency " + juce::String (e.minLowLatencyPeriodMs, 2) + " ms" : juce::String())
+                                         + ")",
+                              ! alreadyAdded);
+            }
+
+            if (endpoints.isEmpty())
+                menu.addItem (-1, "No devices found", false);
+
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (inputs ? &addInputButton : &addOutputButton),
+                                [this, endpoints, inputs] (int result)
+                                {
+                                    if (! juce::isPositiveAndBelow (result - 1, endpoints.size()))
+                                        return;
+
+                                    const auto& e = endpoints.getReference (result - 1);
+                                    owner.getEngine().addExternalDevice (e.id, e.name, inputs);
+                                    externalList.updateContent();
+                                });
+        }
+
         IconMenu& owner;
         juce::AudioDeviceSelectorComponent audioSettings;
+        juce::Label externalTitle;
+        juce::ListBox externalList;
+        juce::TextButton addInputButton, addOutputButton, removeButton, soundSettingsButton;
+        juce::Label marginLabel;
+        juce::ComboBox marginCombo;
+        juce::ToggleButton lowLatencyToggle;
+        static constexpr double marginChoices[] = { 1.0, 1.25, 1.5, 2.0, 3.0 };
     };
 
     class RoutingSettingsTab : public juce::Component,
@@ -881,8 +1058,8 @@ SettingsWindow::SettingsWindow (IconMenu& owner_)
     setContentOwned (panel, true);
     setUsingNativeTitleBar (true);
     setResizable (true, true);
-    setResizeLimits (480, 500, 900, 900);
-    setSize (560, 600);
+    setResizeLimits (560, 680, 1200, 1000);
+    setSize (720, 760);
     centreWithSize (getWidth(), getHeight());
 
     restoreWindowStateFromString (getSettings().getWindowState (AppSettings::Window::settings));

@@ -1,6 +1,8 @@
 #include "AudioEngine.h"
 #include <algorithm>
+#include <optional>
 #include "LoopbackDevices.h"
+#include "ExternalDeviceNodes.h"
 #include "../AppSettings.h"
 #include "../PluginWindow.h"
 #include "../plugins/PluginChain.h"
@@ -48,6 +50,14 @@ AudioEngine::AudioEngine (PluginChain& pluginsIn)
 
     loopbackCapture = std::make_unique<LoopbackCapture>();
 
+    // 主裝置只能是 ASIO：先註冊 ASIO，裝置管理員就不會再加入其他類型
+   #if JUCE_ASIO
+    deviceManager.addAudioDeviceType (std::unique_ptr<juce::AudioIODeviceType> (juce::AudioIODeviceType::createAudioIODeviceType_ASIO()));
+   #endif
+
+    for (const auto& c : getSettings().getExternalDevices())
+        externalDevices.push_back (createExternalDevice (c.uid, c.endpointId, c.name, c.isInput));
+
     if (auto savedAudioState = getSettings().getAudioDeviceState())
         deviceManager.initialise (256, 256, savedAudioState.get(), true);
     else
@@ -57,10 +67,112 @@ AudioEngine::AudioEngine (PluginChain& pluginsIn)
     deviceManager.addAudioCallback (&player);
 
     rebuildGraph();
+    startTimer (3000);
+}
+
+std::unique_ptr<ExternalDevice> AudioEngine::createExternalDevice (int uid, const juce::String& endpointId,
+                                                                  const juce::String& name, bool isInput)
+{
+    const auto& settings = getSettings();
+    return std::make_unique<ExternalDevice> (uid, endpointId, name, isInput,
+                                             settings.isExternalLowLatency(), settings.getExternalSafetyPeriods());
+}
+
+void AudioEngine::setExternalSafetyPeriods (double periods)
+{
+    getSettings().setExternalSafetyPeriods (periods);
+
+    for (auto& ext : externalDevices)
+        ext->setSafetyPeriods (periods);
+
+    rebuildGraph();   // 輸入裝置的目標緩衝在處理圖 prepare 時設定
+}
+
+void AudioEngine::setExternalLowLatency (bool enabled)
+{
+    getSettings().setExternalLowLatency (enabled);
+
+    // 要重新開啟裝置才會換模式；舊的等處理圖不再用它才釋放
+    std::vector<std::unique_ptr<ExternalDevice>> old;
+
+    for (auto& ext : externalDevices)
+    {
+        auto fresh = createExternalDevice (ext->getUid(), ext->getEndpointId(), ext->getName(), ext->isInput());
+        old.push_back (std::move (ext));
+        ext = std::move (fresh);
+    }
+
+    rebuildGraph();
+}
+
+void AudioEngine::saveExternalDevices()
+{
+    std::vector<ExternalDeviceConfig> configs;
+
+    for (auto& ext : externalDevices)
+        configs.push_back ({ ext->getUid(), ext->getEndpointId(), ext->getName(), ext->isInput() });
+
+    getSettings().setExternalDevices (configs);
+}
+
+void AudioEngine::addExternalDevice (const juce::String& endpointId, const juce::String& name, bool isInput)
+{
+    int uid = 1;
+
+    for (auto& ext : externalDevices)
+        uid = juce::jmax (uid, ext->getUid() + 1);
+
+    // uid 以後不回收：路由裡的聲道組編號靠它識別裝置
+    for (const auto& c : getSettings().getExternalDevices())
+        uid = juce::jmax (uid, c.uid + 1);
+
+    externalDevices.push_back (createExternalDevice (uid, endpointId, name, isInput));
+    saveExternalDevices();
+    rebuildGraph();
+}
+
+void AudioEngine::removeExternalDevice (int uid)
+{
+    for (auto it = externalDevices.begin(); it != externalDevices.end(); ++it)
+    {
+        if ((*it)->getUid() != uid)
+            continue;
+
+        // 先把它從處理圖拿掉（節點握著它的參照），再關掉裝置
+        auto removed = std::move (*it);
+        externalDevices.erase (it);
+        saveExternalDevices();
+        rebuildGraph();
+        return;
+    }
+}
+
+void AudioEngine::timerCallback()
+{
+    // 出錯的附加裝置（例如被拔掉）每 3 秒重開一次；開起來了才重建處理圖
+    std::vector<std::unique_ptr<ExternalDevice>> replaced;
+
+    for (auto& ext : externalDevices)
+    {
+        if (ext->getState() != ExternalDevice::State::error)
+            continue;
+
+        auto fresh = createExternalDevice (ext->getUid(), ext->getEndpointId(), ext->getName(), ext->isInput());
+
+        if (fresh->getState() == ExternalDevice::State::running)
+        {
+            replaced.push_back (std::move (ext));
+            ext = std::move (fresh);
+        }
+    }
+
+    if (! replaced.empty())
+        rebuildGraph();   // 舊裝置要等處理圖不再用它（重建完）才釋放
 }
 
 AudioEngine::~AudioEngine()
 {
+    stopTimer();
     loopbackCapture->stop();
     deviceManager.removeAudioCallback (&player);
     player.setProcessor (nullptr);
@@ -256,17 +368,53 @@ void AudioEngine::rebuildGraph()
         activeOut = device->getActiveOutputChannels();
     }
 
+    // 附加裝置（WASAPI）各一個節點；開不起來的裝置不放，相關路由自然略過
+    for (auto& ext : externalDevices)
+    {
+        if (ext->getState() != ExternalDevice::State::running)
+            continue;
+
+        if (ext->isInput())
+            graph.addNode (std::make_unique<ExternalInputProcessor> (*ext), externalInputId (ext->getUid()), noRebuild);
+        else
+            graph.addNode (std::make_unique<ExternalOutputProcessor> (*ext), externalOutputId (ext->getUid()), noRebuild);
+    }
+
+    // 聲道組編號 → 處理圖上的節點與聲道。小於 externalPairBase 是主裝置；否則是 uid × externalPairBase + 組號
+    auto resolvePair = [&] (int key, bool isInput) -> std::optional<Pin>
+    {
+        if (key < externalPairBase)
+        {
+            const auto ch = pairChannels (isInput ? activeIn : activeOut, key);
+
+            if (! ch.isValid())
+                return std::nullopt;
+
+            return Pin { isInput ? inputId() : outputId(), ch.left, ch.right };
+        }
+
+        const int uid = key / externalPairBase;
+        const int left = (key % externalPairBase) * 2;
+
+        for (auto& ext : externalDevices)
+        {
+            const auto nodeId = isInput ? externalInputId (uid) : externalOutputId (uid);
+
+            if (ext->getUid() == uid && ext->isInput() == isInput && graph.getNodeForId (nodeId) != nullptr
+                && left < ext->getNumChannels())
+                return Pin { nodeId, left, left + 1 < ext->getNumChannels() ? left + 1 : left };
+        }
+
+        return std::nullopt;
+    };
+
     // 處理鏈目前的尾端。一開始是所有勾選的輸入組（接到同一個節點時處理圖會自動相加）；
     // 接上第一個節點後就只剩那個節點。沒有任何輸入時為空，後面的節點只會收到靜音
     std::vector<Pin> chainEnds;
 
     for (int pair : routing.chainInputPairs)
-    {
-        const auto in = pairChannels (activeIn, pair);
-
-        if (in.isValid())
-            chainEnds.push_back ({ inputId(), in.left, in.right });
-    }
+        if (const auto in = resolvePair (pair, true))
+            chainEnds.push_back (*in);
 
     auto appendToChain = [&] (AudioProcessorGraph::NodeID nodeId)
     {
@@ -392,24 +540,19 @@ void AudioEngine::rebuildGraph()
 
     for (const auto& [source, outputPair] : routing.routes)
     {
-        const auto out = pairChannels (activeOut, outputPair);
+        const auto outPin = resolvePair (outputPair, false);
 
-        if (! out.isValid())
+        if (! outPin)
             continue;
-
-        const Pin outPin { outputId(), out.left, out.right };
 
         if (source == Routing::processedChain)
         {
             for (const auto& end : chainEnds)
-                connect (end, outPin);
+                connect (end, *outPin);
         }
-        else
+        else if (const auto inPin = resolvePair (source, true))
         {
-            const auto in = pairChannels (activeIn, source);
-
-            if (in.isValid())
-                connect (Pin { inputId(), in.left, in.right }, outPin);
+            connect (*inPin, *outPin);
         }
     }
 
@@ -502,6 +645,23 @@ std::vector<AudioEngine::ChannelPair> AudioEngine::getActivePairs (bool inputs) 
             name = pairNames.joinIntoString (" + ");
 
         pairs.push_back ({ pair, name, pairNames.joinIntoString (" + ") });
+    }
+
+    // 附加裝置：所有聲道都算有效；名稱前面加裝置名
+    for (auto& ext : externalDevices)
+    {
+        if (ext->isInput() != inputs || ext->getState() != ExternalDevice::State::running)
+            continue;
+
+        const int n = ext->getNumChannels();
+
+        for (int pair = 0; pair * 2 < n; ++pair)
+        {
+            const auto channels = pair * 2 + 1 < n ? juce::String (pair * 2 + 1) + "+" + juce::String (pair * 2 + 2)
+                                                   : juce::String (pair * 2 + 1);
+            const auto name = n > 2 ? ext->getName() + " " + channels : ext->getName();
+            pairs.push_back ({ ext->getUid() * externalPairBase + pair, name, name });
+        }
     }
 
     // 簡化後同名的（例如「Input 1/2」與「Input 3/4」都變成「Input」）改回完整名稱
@@ -629,6 +789,11 @@ AudioEngine::LatencyReport AudioEngine::getLatencyReport() const
             if (auto* node = graph.getNodeForId (juce::AudioProcessorGraph::NodeID { nodeIndex }))
                 report.pluginsMs += node->getProcessor()->getLatencySamples() * msPerSample;
 
+    // 附加輸出：處理鏈之後另外多出的延遲（取代音效卡輸出那一段）
+    for (auto& ext : externalDevices)
+        if (! ext->isInput() && ext->getState() == ExternalDevice::State::running)
+            report.externalOutputs.push_back ({ ext->getName(), 1000.0 * ext->getAddedLatencySeconds() });
+
     return report;
 }
 
@@ -644,7 +809,23 @@ juce::String AudioEngine::LatencyReport::describe() const
          + juce::String::fromUTF8 (" + 回音消除 ") + ms (aecMs)
          + juce::String::fromUTF8 (" + 降噪 ") + ms (noiseMs)
          + juce::String::fromUTF8 (" + 外掛 ") + ms (pluginsMs)
-         + juce::String::fromUTF8 (" + 輸出 ") + ms (outputMs) + juce::String::fromUTF8 ("）");
+         + juce::String::fromUTF8 (" + 輸出 ") + ms (outputMs) + juce::String::fromUTF8 ("）") + describeExternalOutputs (true);
+}
+
+juce::String AudioEngine::LatencyReport::describeExternalOutputs (bool chinese) const
+{
+    if (externalOutputs.empty())
+        return {};
+
+    // 送到附加輸出時，走的是「處理鏈 → 時脈橋 → 該裝置」，不經過主裝置的輸出
+    const double chainMs = inputMs + aecMs + noiseMs + pluginsMs;
+    juce::StringArray items;
+
+    for (const auto& [name, addedMs] : externalOutputs)
+        items.add (name + (chinese ? juce::String::fromUTF8 (" 總計 ") : juce::String (" total "))
+                   + juce::String (juce::roundToInt (chainMs + addedMs)) + " ms");
+
+    return (chinese ? juce::String::fromUTF8 ("；附加輸出：") : juce::String ("; extra outputs: ")) + items.joinIntoString (", ");
 }
 
 AecMonitorSnapshot AudioEngine::getAecMonitorSnapshot() const

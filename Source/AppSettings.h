@@ -2,7 +2,17 @@
 
 #include <JuceHeader.h>
 #include <optional>
+#include <vector>
 #include "audio/Routing.h"
+
+/** 一個附加裝置（WASAPI 共用模式）的設定；uid 加入後不再改變，路由用它識別裝置 */
+struct ExternalDeviceConfig
+{
+    int uid = 0;
+    juce::String endpointId;
+    juce::String name;
+    bool isInput = false;
+};
 
 /**
  * 設定檔唯一的讀寫入口。所有設定鍵名與預設值都只寫在 AppSettings.cpp，
@@ -39,6 +49,16 @@ public:
     /** 沒設定過時回傳空值，由 AudioEngine 依目前裝置決定預設 */
     std::optional<Routing> getRouting() const;
     void setRouting (const Routing& routing);
+
+    // 附加裝置
+    std::vector<ExternalDeviceConfig> getExternalDevices() const;
+    void setExternalDevices (const std::vector<ExternalDeviceConfig>& devices);
+    /** 緩衝餘裕：留幾個裝置週期（預設 1.5） */
+    double getExternalSafetyPeriods() const;
+    void setExternalSafetyPeriods (double periods);
+    /** 先試 Windows 低延遲共用模式（預設開） */
+    bool isExternalLowLatency() const;
+    void setExternalLowLatency (bool enabled);
 
     // 自動檢查更新
     bool isAutoUpdateCheckEnabled() const;

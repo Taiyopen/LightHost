@@ -5,6 +5,7 @@
 #include <vector>
 #include "LoopbackCapture.h"
 #include "Routing.h"
+#include "ExternalDevice.h"
 #include "../dsp/AecStats.h"
 
 class AecProcessor;
@@ -17,7 +18,7 @@ class PluginChain;
  * 任何設定或外掛清單改變後呼叫 rebuildGraph()；外掛鏈的增刪移動走下面的方法，
  * 會先把各外掛目前的狀態存起來再重建。
  */
-class AudioEngine
+class AudioEngine : private juce::Timer
 {
 public:
     explicit AudioEngine (PluginChain& plugins);
@@ -74,10 +75,13 @@ public:
         double noiseMs = 0.0;    // 降噪關閉時為 0（原音直接通過）
         double pluginsMs = 0.0;  // 處理鏈上外掛回報的延遲總和（略過的也算：乾聲為了對齊仍會延遲）
         double outputMs = 0.0;   // 音效卡回報的輸出延遲
+        std::vector<std::pair<juce::String, double>> externalOutputs;   // 附加輸出：名稱、多出的延遲（時脈橋＋裝置週期）
 
         double totalMs() const { return inputMs + aecMs + noiseMs + pluginsMs + outputMs; }
         /** 例：「總計 38 ms（輸入 5 + 回音消除 19 + 降噪 30 + 外掛 0 + 輸出 5）」 */
         juce::String describe() const;
+        /** 附加輸出各自的總延遲（處理鏈＋該裝置）；沒有附加輸出時為空字串 */
+        juce::String describeExternalOutputs (bool chinese) const;
     };
     LatencyReport getLatencyReport() const;
 
@@ -96,9 +100,23 @@ public:
     /** 存檔並重建處理圖 */
     void setRouting (const Routing& routing);
 
+    // 附加裝置（WASAPI 共用模式）。聲道組編號 = uid × externalPairBase + 組號，主裝置的組號都小於它
+    static constexpr int externalPairBase = 1000;
+    const std::vector<std::unique_ptr<ExternalDevice>>& getExternalDevices() const { return externalDevices; }
+    void addExternalDevice (const juce::String& endpointId, const juce::String& name, bool isInput);
+    void removeExternalDevice (int uid);
+    /** 緩衝餘裕（幾個裝置週期）；改了會重建處理圖 */
+    void setExternalSafetyPeriods (double periods);
+    /** 低延遲共用模式；改了會重新開啟所有附加裝置 */
+    void setExternalLowLatency (bool enabled);
+
 private:
     template <typename Change>
     void changeChain (Change&& change);
+    void timerCallback() override;
+    void saveExternalDevices();
+    std::unique_ptr<ExternalDevice> createExternalDevice (int uid, const juce::String& endpointId,
+                                                          const juce::String& name, bool isInput);
 
     AecProcessor* getAecProcessor() const;
     NoiseReducerProcessor* getNoiseReducer() const;
@@ -123,6 +141,9 @@ private:
     static juce::String sharedPairName (const juce::String& left, const juce::String& right);
 
     PluginChain& plugins;
+
+    // 要比 graph 晚毀：處理圖的節點握著它們的參照
+    std::vector<std::unique_ptr<ExternalDevice>> externalDevices;
 
     juce::AudioDeviceManager deviceManager;
     juce::AudioPluginFormatManager formatManager;

@@ -13,6 +13,9 @@ Light Host：Windows 系統列常駐的 VST3 外掛宿主，麥克風經「回�
 | `Source/audio/AudioEngine.*` | 音訊裝置、處理圖、外掛狀態存取、AEC 參考訊號擷取；`rebuildGraph()` 重建整張圖 |
 | `Source/update/Updater.*` | 自動更新：查 GitHub 最新 Release、下載安裝檔、以 `/SILENT` 執行後讓 App 存檔結束 |
 | `Source/audio/Routing.*` | 路由資料：哪幾組輸入送進處理鏈（多組時先相加）、哪些來源（處理後／各輸入原音）送到哪些輸出；以裝置上的聲道組編號存 |
+| `Source/audio/ClockBridge.*` | 兩個各用各時脈的裝置之間的橋：寫入端／讀取端各一條執行緒，讀取端轉取樣率並追時脈差；斷了等資料、資料夠了直接對準 |
+| `Source/audio/ExternalDevice.*` | 附加裝置（WASAPI 共用模式）：自己的執行緒收發聲音、自動偵測格式；先試低延遲共用模式（IAudioClient3），不支援退回 10 ms；緩衝餘裕＝幾個裝置週期；列舉端點 |
+| `Source/audio/ExternalDeviceNodes.h` | 處理圖裡的附加輸入／輸出節點（透過 ClockBridge 與裝置交換） |
 | `Source/audio/LoopbackCapture.*` | 獨立執行緒擷取 WASAPI loopback 當 AEC 參考 |
 | `Source/dsp/AecProcessor.*` | AEC3 包裝；參考訊號環形緩衝、重新取樣、幀對齊 |
 | `Source/dsp/OutputReferenceTap.*` | 把送往喇叭的訊號餵給 AEC 當參考（App Output 模式） |
@@ -25,11 +28,13 @@ Light Host：Windows 系統列常駐的 VST3 外掛宿主，麥克風經「回�
 | `Source/ui/NoiseCompareWindow.*` | AEC 分頁「Compare...」開出的比較表 |
 | `Source/dsp/DryWetMixer.h` | 每個外掛後面的乾濕比混音（乾聲由處理圖自動延遲對齊） |
 | `third_party/{rnnoise,onnxruntime,deepfilternet,fastenhancer,gtcrn}` | 降噪用的程式庫、DLL 與模型；來源與重建方式見各自 README |
-| `tests/NoiseBench.cpp`、`tests/AecDriftTest.cpp` | 離線檢查：降噪效果／CPU、AEC 時脈追蹤（build `NoiseBench`、`AecDriftTest` 目標後執行） |
+| `tests/NoiseBench.cpp`、`tests/AecDriftTest.cpp`、`tests/ClockBridgeTest.cpp` | 離線檢查：降噪效果／CPU、AEC 時脈追蹤、裝置間時脈橋接（`ClockBridgeTest --list` 列出 Windows 音訊端點） |
 | `Source/ui/SettingsWindow.*` | 設定視窗：Audio / Routing / AEC / Plugins / Updates 分頁 |
 | `Source/ui/AecMonitorWindow.*` | AEC 即時監控 |
 | `third_party/webrtc-aec3` | AEC3（有本地修改過的 `CMakeLists.txt`） |
 | `third_party/ASIOSDK` | 授權不能散佈，不進版控；有放才會開 ASIO |
+
+裝置：主裝置限定 ASIO（Windows 一個程式同時只能開一個 ASIO 驅動），整條處理鏈跟它的時脈；其他裝置都以 WASAPI 共用模式當附加裝置，聲道組編號 = uid × 1000 + 組號（主裝置的組號 < 1000）。
 
 處理圖：`勾選的輸入聲道組（可多組，相加）→ AecProcessor → NoiseReducer → 外掛 → 乾濕比混音 → 外掛 → …（略過用節點 bypass 旗標）→ OutputReferenceTap → 依路由送到各輸出聲道組`；各輸入的原音也可依路由直送輸出。處理圖的輸入／輸出節點只有「有勾選」的聲道，換算見 `AudioEngine::pairChannels`
 

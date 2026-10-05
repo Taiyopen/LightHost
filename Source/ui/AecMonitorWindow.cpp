@@ -151,7 +151,7 @@ public:
         latencyRow.setValue (ms (report.totalMs()) + " ms");
         latencyBreakdownRow.setValue ("in " + ms (report.inputMs) + " / AEC " + ms (report.aecMs)
                                       + " / NR " + ms (report.noiseMs) + " / plugins " + ms (report.pluginsMs)
-                                      + " / out " + ms (report.outputMs));
+                                      + " / out " + ms (report.outputMs) + report.describeExternalOutputs (false));
     }
 
     void updateSnapshot (const AecMonitorSnapshot& snap)

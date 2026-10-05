@@ -16,6 +16,9 @@ namespace
         constexpr auto icon                 = "icon";
         constexpr auto autoUpdateCheck      = "autoCheckUpdates";
         constexpr auto routing              = "routing";
+        constexpr auto externalDevices      = "externalDevices";
+        constexpr auto externalSafety       = "externalSafetyPeriods";
+        constexpr auto externalLowLatency   = "externalLowLatency";
         constexpr auto audioDeviceState     = "audioDeviceState";
         constexpr auto knownPluginList      = "pluginList";
         constexpr auto activePluginList     = "pluginListActive";
@@ -115,6 +118,50 @@ void AppSettings::setRouting (const Routing& routing)
     getFile().setValue (Keys::routing, routing.toString());
     save();
 }
+
+std::vector<ExternalDeviceConfig> AppSettings::getExternalDevices() const
+{
+    std::vector<ExternalDeviceConfig> devices;
+
+    if (auto xml = getFile().getXmlValue (Keys::externalDevices))
+    {
+        for (auto* e : xml->getChildIterator())
+        {
+            ExternalDeviceConfig c;
+            c.uid = e->getIntAttribute ("uid");
+            c.endpointId = e->getStringAttribute ("id");
+            c.name = e->getStringAttribute ("name");
+            c.isInput = e->getBoolAttribute ("input");
+
+            if (c.uid > 0 && c.endpointId.isNotEmpty())
+                devices.push_back (c);
+        }
+    }
+
+    return devices;
+}
+
+void AppSettings::setExternalDevices (const std::vector<ExternalDeviceConfig>& devices)
+{
+    juce::XmlElement xml ("EXTERNALDEVICES");
+
+    for (const auto& c : devices)
+    {
+        auto* e = xml.createNewChildElement ("DEVICE");
+        e->setAttribute ("uid", c.uid);
+        e->setAttribute ("id", c.endpointId);
+        e->setAttribute ("name", c.name);
+        e->setAttribute ("input", c.isInput);
+    }
+
+    getFile().setValue (Keys::externalDevices, &xml);
+    save();
+}
+
+double AppSettings::getExternalSafetyPeriods() const    { return getFile().getDoubleValue (Keys::externalSafety, 1.5); }
+void AppSettings::setExternalSafetyPeriods (double p)   { getFile().setValue (Keys::externalSafety, p); save(); }
+bool AppSettings::isExternalLowLatency() const          { return getFile().getBoolValue (Keys::externalLowLatency, true); }
+void AppSettings::setExternalLowLatency (bool enabled)  { getFile().setValue (Keys::externalLowLatency, enabled); save(); }
 
 bool AppSettings::isAutoUpdateCheckEnabled() const
 {
