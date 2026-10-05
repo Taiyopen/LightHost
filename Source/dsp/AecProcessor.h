@@ -88,6 +88,7 @@ private:
     double smoothedReferenceLead = 0.0;
     double referenceDriftIntegral = 0.0;
     int lastStoredReadPos = -1;
+    bool referenceStarved = false;   // 喇叭參考斷了，正在等新資料累積回目標差距
     std::atomic<float> referenceDriftPpm { 0.0f };
     std::atomic<float> strengthPercent { 100.0f };
 

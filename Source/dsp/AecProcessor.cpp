@@ -308,6 +308,7 @@ void AecProcessor::resetReferenceReader (int writeIndex)
     referenceReadPosition = (double) ((writeIndex - target + referenceRingSize) % referenceRingSize);
     smoothedReferenceLead = (double) target;
     referenceDriftIntegral = 0.0;
+    referenceStarved = true;   // 一開始還沒有參考資料，等資料夠了再對準
     lastStoredReadPos = (int) referenceReadPosition;
     referenceReadPos.store (lastStoredReadPos, std::memory_order_release);
 }
@@ -331,28 +332,47 @@ bool AecProcessor::readReferenceFrame (float* dest, int numSamples)
 
     double lead = leadOf (referenceReadPosition);
     const int slack = getReferenceSlackSamples();
+    const double target = (double) (referenceDelaySamples + slack / 2);
 
-    // 資料不夠讀一整格（喇叭參考斷了）或多到超出範圍：硬性重新對齊，其餘時間只做微調
-    if (lead < (double) (numSamples + 4) || lead > (double) getMaxAllowedReferenceLeadSamples())
+    // 多到超出範圍（讀取端停過）：當作重新開始，下面會直接對準目標差距
+    if (lead > (double) getMaxAllowedReferenceLeadSamples())
     {
         referenceUnderruns.fetch_add (1, std::memory_order_relaxed);
-        resetReferenceReader (writeIndex);
-        lead = leadOf (referenceReadPosition);
+        referenceStarved = true;
+    }
 
-        if (lead < (double) (numSamples + 4))
+    // 不夠讀一整格：喇叭沒在播，系統擷取暫停送資料。參考當作靜音，讀取位置不動；
+    // 絕不能往回拉，否則會一直重播剛讀過的那一小段，讓 AEC 去扣不存在的回音
+    if (! referenceStarved && lead < (double) (numSamples + 4))
+    {
+        referenceUnderruns.fetch_add (1, std::memory_order_relaxed);
+        referenceStarved = true;
+    }
+
+    if (referenceStarved)
+    {
+        if (lead < target)
         {
             std::fill (dest, dest + numSamples, 0.0f);
             return false;
         }
+
+        // 新資料夠了：直接跳到剛好差目標距離的位置。這時參考原本就是靜音，跳過去不影響 AEC；
+        // 若改成慢慢追，暫時的大差距會把時脈追蹤的積分值帶歪，越用越不準。積分值（真正的時脈差）保留
+        referenceReadPosition = (double) ((writeIndex - (int) target + referenceRingSize) % referenceRingSize);
+        lead = target;
+        smoothedReferenceLead = target;
+        referenceStarved = false;
     }
 
     // 時脈追蹤：喇叭與麥克風各用各的時脈，慢慢錯開。平滑後的差距（約 1 秒）偏離目標多少，
     // 就把參考訊號的播放速度微調多少，最多 ±2000 ppm，遠低於聽得出來的程度
     // 比例項負責反應，積分項把長期固定的時脈差吃掉，讓差距回到正中間
-    const double target = (double) (referenceDelaySamples + slack / 2);
     smoothedReferenceLead += 0.01 * (lead - smoothedReferenceLead);
     const double error = smoothedReferenceLead - target;
-    referenceDriftIntegral = juce::jlimit (-0.002, 0.002, referenceDriftIntegral + error * 2.0e-9);
+    // 只在差距接近目標時累積積分：大差距是暫時的（區塊抖動、剛恢復），不是時脈差
+    if (std::abs (error) < (double) slack / 2)
+        referenceDriftIntegral = juce::jlimit (-0.002, 0.002, referenceDriftIntegral + error * 2.0e-9);
     const double correction = juce::jlimit (-0.002, 0.002, error * 2.0e-6 + referenceDriftIntegral);
     const double step = 1.0 + correction;
     referenceDriftPpm.store ((float) (correction * 1.0e6), std::memory_order_relaxed);

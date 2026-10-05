@@ -60,6 +60,74 @@ namespace
         return ok;
     }
 
+    /** 喇叭參考時有時無（播 2 秒、停 1 秒）：每段中斷只算一次，時脈修正不會越用越歪卡在上限 */
+    bool runGapCase (double driftPpm)
+    {
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 256;
+        const int numBlocks = (int) (sampleRate * 60.0 / blockSize);
+
+        AecProcessor aec;
+        aec.setPlayConfigDetails (2, 2, sampleRate, blockSize);
+        aec.prepareToPlay (sampleRate, blockSize);
+
+        juce::Random random (11);
+        juce::AudioBuffer<float> mic (2, blockSize);
+        juce::MidiBuffer midi;
+        std::vector<float> reference (blockSize * 2);
+        double pending = 0.0;
+        int gaps = 0;
+        bool wasPlaying = true;
+
+        for (int b = 0; b < numBlocks; ++b)
+        {
+            const double t = (double) b * blockSize / sampleRate;
+            const bool playing = std::fmod (t, 3.0) < 2.0;
+
+            if (wasPlaying && ! playing)
+                ++gaps;
+            wasPlaying = playing;
+
+            pending += blockSize * (1.0 + driftPpm * 1.0e-6);
+            const int count = (int) pending;
+            pending -= count;
+
+            if (playing)
+            {
+                for (int i = 0; i < count; ++i)
+                    reference[(size_t) i] = (random.nextFloat() * 2.0f - 1.0f) * 0.1f;
+
+                aec.pushReference (reference.data(), count);
+            }
+
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const float s = (random.nextFloat() * 2.0f - 1.0f) * 0.1f;
+                mic.setSample (0, i, s);
+                mic.setSample (1, i, s);
+            }
+
+            aec.processBlock (mic, midi);
+
+            if (std::getenv ("AEC_TEST_VERBOSE") != nullptr && b % (int) (sampleRate * 0.25 / blockSize) == 0 && t < 9.0)
+            {
+                const auto s = aec.getStats();
+                std::printf ("  t=%5.2f playing=%d lead=%6.1f ms drift=%+7.1f ppm resyncs=%lld\n",
+                             t, playing ? 1 : 0, s.referenceDelayMs, s.referenceDriftPpm, (long long) s.referenceUnderruns);
+            }
+        }
+
+        const auto stats = aec.getStats();
+        // 每段中斷只算一次；每次恢復都會直接對準，所以只要求修正值沒有被帶到上限（±2000 ppm）卡住。
+        // 2 秒一段太短，追蹤來不及收斂，但每段內最多錯開不到 1 ms，AEC 自己能吸收
+        const bool ok = stats.referenceUnderruns <= gaps + 1 && std::abs (stats.referenceDriftPpm) < 1000.0;
+
+        std::printf ("gaps %2d, drift %+5.0f ppm -> resyncs %lld (expect <= %d), measured drift %+7.1f ppm  %s\n",
+                     gaps, driftPpm, (long long) stats.referenceUnderruns, gaps + 1, stats.referenceDriftPpm,
+                     ok ? "OK" : "FAIL");
+        return ok;
+    }
+
     /** AEC 回報的延遲要與實測相符，而且不因主機區塊大小改變；喇叭參考保持靜音 */
     bool runLatencyCase (int blockSize, double sampleRate)
     {
@@ -125,6 +193,12 @@ int main()
 
     for (double drift : { -1000.0, -300.0, 0.0, 300.0, 1000.0 })
         if (! runCase (drift))
+            ++failures;
+
+    std::printf ("\n");
+
+    for (double drift : { 0.0, 300.0 })
+        if (! runGapCase (drift))
             ++failures;
 
     std::printf ("\n");

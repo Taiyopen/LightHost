@@ -162,13 +162,18 @@ public:
                 continue;
             }
 
-            if (data != nullptr && numFrames > 0 && (flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0)
+            if (numFrames > 0)
             {
                 if (auto* aec = consumerRef.load())
                 {
                     monoBuffer.resize (static_cast<size_t> (numFrames));
 
-                    if (isFloat)
+                    // 標成靜音的封包也要送同樣長度的靜音，參考訊號的時間軸才不會出現缺口
+                    if (data == nullptr || (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0)
+                    {
+                        std::fill (monoBuffer.begin(), monoBuffer.end(), 0.0f);
+                    }
+                    else if (isFloat)
                     {
                         const auto* interleaved = reinterpret_cast<const float*> (data);
                         for (UINT32 frame = 0; frame < numFrames; ++frame)
